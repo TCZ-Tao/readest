@@ -13,7 +13,9 @@ exclude = [
   # `workspace = true` inheritance. Keep it out of this workspace so those
   # resolve against packages/tauri/Cargo.toml; it still reaches the build
   # through [patch.crates-io] below.
-  "packages/tauri"
+  "packages/tauri",
+  # Path patch for Windows→Android cross-compile; not a workspace member.
+  "packages/turso-ext",
 ]
 resolver = "2"
 
@@ -54,3 +56,7 @@ tauri = { path = "packages/tauri/crates/tauri" }
 # without that cargo cannot unify swift-rs and silently drops the tauri patch
 # above in favour of crates.io tauri. See packages/swift-rs.
 swift-rs = { path = "packages/swift-rs" }
+# turso_ext 0.6.1's build.rs uses cfg!(target_os = "windows") (host, not
+# target), so Windows→Android cross-compiles try to link advapi32. Upstream
+# main already checks CARGO_CFG_TARGET_OS; drop this when we bump past that.
+turso_ext = { path = "packages/turso-ext" }

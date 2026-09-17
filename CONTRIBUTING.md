@@ -107,6 +107,76 @@ pnpm tauri android dev
 pnpm tauri android dev --host
 ```
 
+Gradle may time out while fetching the wrapper ZIP from `services.gradle.org` or while resolving `google()` / `mavenCentral()` / the Gradle Plugin Portal. Do **not** commit a mirror URL into `gradle-wrapper.properties` (Tauri regenerates that file, and it would break contributors who do not need a mirror). Configure mirrors on your machine instead.
+
+**Dependencies (AGP, AndroidX, Kotlin, …)** — user-global, all Gradle projects on this machine. Create `~/.gradle/init.d/tencent-mirror.init.gradle` (`C:\Users\<you>\.gradle\init.d\` on Windows):
+
+```gradle
+def mirrors = [
+    'https://dl.google.com/dl/android/maven2': 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/',
+    'https://maven.google.com': 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/',
+    'https://repo.maven.apache.org/maven2': 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/',
+    'https://repo1.maven.org/maven2': 'https://mirrors.cloud.tencent.com/nexus/repository/maven-public/',
+    'https://plugins.gradle.org/m2': 'https://mirrors.cloud.tencent.com/nexus/repository/gradle-plugins/',
+]
+
+def rewrite = { org.gradle.api.artifacts.dsl.RepositoryHandler repos ->
+    repos.all { repo ->
+        if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository) {
+            def original = repo.url.toString().replaceAll(/\/+$/, '')
+            def mapped = mirrors[original]
+            if (mapped != null) {
+                repo.setUrl(mapped)
+            }
+        }
+    }
+}
+
+gradle.beforeSettings { settings ->
+    println '[gradle-mirror] Tencent Cloud (google / mavenCentral / pluginPortal)'
+    rewrite(settings.pluginManagement.repositories)
+    rewrite(settings.dependencyResolutionManagement.repositories)
+}
+
+gradle.allprojects { project ->
+    project.buildscript { bs ->
+        rewrite(bs.repositories)
+    }
+    rewrite(project.repositories)
+}
+```
+
+A later build that prints `[gradle-mirror] Tencent Cloud (...)` is using the mirror. Remove that file to go back to the official repos.
+
+**Wrapper ZIP** (`gradle-x.y.z-bin.zip`) — `gradlew` reads `distributionUrl` before Gradle starts, so the init script cannot rewrite it. Prefetch the same version the wrapper asks for (see `apps/readest-app/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties`) into the cache:
+
+```bash
+# 1. Run the Android build once so Gradle creates the hash directory (it may time out).
+# 2. Download the same version from the Tencent Gradle mirror, e.g. 8.14.3:
+curl -L -o gradle-8.14.3-bin.zip https://mirrors.cloud.tencent.com/gradle/gradle-8.14.3-bin.zip
+```
+
+On Windows (PowerShell):
+
+```powershell
+curl.exe -L -o "$env:TEMP\gradle-8.14.3-bin.zip" https://mirrors.cloud.tencent.com/gradle/gradle-8.14.3-bin.zip
+$dir = Get-ChildItem "$env:USERPROFILE\.gradle\wrapper\dists\gradle-8.14.3-bin" -Directory | Select-Object -First 1
+Move-Item -Force "$env:TEMP\gradle-8.14.3-bin.zip" (Join-Path $dir.FullName "gradle-8.14.3-bin.zip")
+Remove-Item (Join-Path $dir.FullName "gradle-8.14.3-bin.zip.part") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $dir.FullName "gradle-8.14.3-bin.zip.lck") -ErrorAction SilentlyContinue
+```
+
+On macOS / Linux:
+
+```bash
+curl -L -o /tmp/gradle-8.14.3-bin.zip https://mirrors.cloud.tencent.com/gradle/gradle-8.14.3-bin.zip
+dir=$(find ~/.gradle/wrapper/dists/gradle-8.14.3-bin -mindepth 1 -maxdepth 1 -type d | head -n 1)
+mv /tmp/gradle-8.14.3-bin.zip "$dir/gradle-8.14.3-bin.zip"
+rm -f "$dir/gradle-8.14.3-bin.zip.part" "$dir/gradle-8.14.3-bin.zip.lck"
+```
+
+Re-run `pnpm tauri android dev`. Repeat the prefetch when the wrapper version in `gradle-wrapper.properties` changes.
+
 #### iOS
 
 ```bash
