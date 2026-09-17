@@ -31,6 +31,8 @@ rustup update
 
 To get started with Readest, follow these steps to clone and build the project.
 
+Windows desktop + Android (Chinese, including Gradle mirrors): [docs/windows-android-setup.zh-CN.md](docs/windows-android-setup.zh-CN.md).
+
 ### 1. Clone the Repository
 
 ```bash
@@ -89,6 +91,8 @@ pnpm preview
 ```
 
 #### Android
+
+Windows + Android setup in Chinese (SDK/NDK, `android init`, and Tencent Gradle mirrors): [docs/windows-android-setup.zh-CN.md](docs/windows-android-setup.zh-CN.md).
 
 The following must be run once before running the Android app. Note that this is done automatically if using the nix Android devshell:
 
