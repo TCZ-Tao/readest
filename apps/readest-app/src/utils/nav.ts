@@ -10,7 +10,17 @@ const createReaderWindow = (appService: AppService, url: string) => {
   const currentWindow = getCurrentWindow();
   const label = currentWindow.label;
   const newLabelPrefix = label === 'main' ? 'reader' : label;
-  const win = new WebviewWindow(`${newLabelPrefix}-${readerWindowsCount}`, {
+  // Tauri keys its window/webview registries by label, and `readerWindowsCount`
+  // only increments in the async 'tauri://created' callback, so two opens
+  // racing within that window read the same count. Colliding labels entangle
+  // the windows: destroying one then unregisters the other, leaving a zombie
+  // window whose every invoke fails with "failed to acquire webview
+  // reference". The time+random suffix makes the label unique regardless.
+  const rand = Math.floor(Math.random() * 1679616)
+    .toString(36)
+    .padStart(4, '0');
+  const uniqueId = `${readerWindowsCount}-${Date.now().toString(36)}-${rand}`;
+  const win = new WebviewWindow(`${newLabelPrefix}-${uniqueId}`, {
     url,
     width: 800,
     height: 600,
