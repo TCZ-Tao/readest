@@ -242,6 +242,7 @@
     "allow-spawn-fresh-browser",
     "allow-verify-update-signature",
     "allow-install-nightly-update",
+    "allow-find-reader-window-with-book",
     "allow-localsend-start",
     "allow-localsend-stop",
     "allow-localsend-get-status",

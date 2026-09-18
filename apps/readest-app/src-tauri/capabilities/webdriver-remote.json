@@ -45,6 +45,7 @@
     "allow-localsend-respond",
     "allow-localsend-cancel-receive",
     "allow-localsend-send-files",
-    "allow-localsend-cancel-send"
+    "allow-localsend-cancel-send",
+    "allow-find-reader-window-with-book"
   ]
 }

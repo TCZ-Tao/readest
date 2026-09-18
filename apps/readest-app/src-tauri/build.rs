@@ -67,6 +67,7 @@ fn main() {
             "localsend_cancel_receive",
             "localsend_send_files",
             "localsend_cancel_send",
+            "find_reader_window_with_book",
         ]),
     ))
     .expect("failed to run tauri-build");

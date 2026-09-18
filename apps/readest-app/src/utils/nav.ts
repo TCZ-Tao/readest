@@ -1,4 +1,5 @@
 import { redirect, useRouter } from 'next/navigation';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, ScrollBarStyle } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isPWA, isTauriAppPlatform, isWebAppPlatform } from '@/services/environment';
@@ -60,6 +61,32 @@ export const showReaderWindow = (
   params.set('ids', ids);
   const url = `/reader?${params.toString()}`;
   createReaderWindow(appService, url);
+};
+
+/**
+ * Focus the reader window that already has `bookHash` open, and report whether
+ * one was found. Which window holds which book is read from the `?ids=` query
+ * of each window's URL — a lookup only the Rust side can do (the JS API does
+ * not expose a webview's URL) — so it delegates to
+ * `find_reader_window_with_book`.
+ */
+export const focusExistingReaderWindow = async (bookHash: string): Promise<boolean> => {
+  // Fail open: when this module reaches a webview whose binary predates the
+  // command (dev HMR during a Rust rebuild), the invoke rejects — fall back to
+  // opening a new window instead of breaking book opening entirely.
+  let label: string | null = null;
+  try {
+    label = await invoke<string | null>('find_reader_window_with_book', { hash: bookHash });
+  } catch {
+    return false;
+  }
+  if (!label) return false;
+  const win = await WebviewWindow.getByLabel(label);
+  if (!win) return false;
+  await win.show();
+  await win.unminimize();
+  await win.setFocus();
+  return true;
 };
 
 export const showLibraryWindow = (appService: AppService, filenames: string[]) => {

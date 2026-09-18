@@ -65,3 +65,5 @@ apps/readest.koplugin/native/localsend-bin/target/
 
 .cursor/
 .codegraph/
+
+/plans/

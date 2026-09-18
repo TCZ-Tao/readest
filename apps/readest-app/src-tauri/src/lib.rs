@@ -341,6 +341,29 @@ fn set_webview_info(user_agent: String) {
     }
 }
 
+// Label of the reader window that has `hash` open (from its `?ids=` query), or
+// None. Reader windows carry their books in the URL (see `showReaderWindow` in
+// src/utils/nav.ts), and the JS side cannot read a webview's URL, so the
+// frontend asks here before spawning a duplicate window for the same book.
+#[tauri::command]
+fn find_reader_window_with_book(app: tauri::AppHandle, hash: String) -> Option<String> {
+    for (label, webview) in app.webview_windows() {
+        if !label.starts_with("reader") {
+            continue;
+        }
+        let Ok(url) = webview.url() else {
+            continue;
+        };
+        let Some((_, ids)) = url.query_pairs().into_owned().find(|(key, _)| key == "ids") else {
+            continue;
+        };
+        if ids.split('+').any(|id| id == hash) {
+            return Some(label);
+        }
+    }
+    None
+}
+
 #[derive(Clone, serde::Serialize)]
 #[allow(dead_code)]
 struct SingleInstancePayload {
@@ -520,6 +543,7 @@ pub fn run() {
             nightly_update::verify_update_signature,
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             nightly_update::install_nightly_update,
+            find_reader_window_with_book,
         ])
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_persisted_scope::init())
