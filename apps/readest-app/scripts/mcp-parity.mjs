@@ -224,8 +224,11 @@ const readers = (state.windows ?? [])
   .map((entry) => entry.label);
 const tocs = [];
 for (const label of readers) tocs.push({ label, report: await report('readest_toc', { window: label }) });
+if (!readers.length) {
+  console.log('skip readest_toc: no reader window with an open book');
+}
 check(
-  tocs.length > 0 && tocs.every((entry) => entry.report?.ok === true && Array.isArray(entry.report.entries)),
+  readers.length > 0 && tocs.every((entry) => entry.report?.ok === true && Array.isArray(entry.report.entries)),
   'readest_toc answers for every reader window',
   tocs.map((entry) => `${entry.label}: ${entry.report?.entries?.length ?? 'error'} entries`).join('; ') ||
     'no reader window with an open book',
