@@ -40,6 +40,22 @@ const ACTION_EVENT: &str = "debug://action";
 /// Actions run in a webview the AI also drives by hand; a window that never
 /// answers must not hang the tool call, so both waits are bounded.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often an unanswered action is re-sent while `ACTION_TIMEOUT` runs: Tauri
+/// events are fire-and-forget, so an event aimed at a window whose JS listener
+/// is not registered yet (still mounting, or mid-reload) is dropped, not queued.
+const ACTION_RETRY: Duration = Duration::from_secs(1);
+/// `readest_wait`'s bounds, in ms. The caller's `timeout_ms` is the whole tool
+/// call's budget, and the frontend is told to finish `WAIT_MARGIN` earlier so a
+/// condition that never arrives reports its own reason. The transport's own
+/// deadline sits `WAIT_SLACK` past the budget: a window mid-reload only sees the
+/// action seconds after the call started (events are fire-and-forget, re-sent
+/// once a second), and without the slack that delivery delay would make the
+/// transport cut the wait off with a vaguer message than the frontend's.
+const WAIT_DEFAULT_MS: u64 = 10_000;
+const WAIT_MIN_MS: u64 = 2_000;
+const WAIT_MAX_MS: u64 = 60_000;
+const WAIT_MARGIN_MS: u64 = 1_000;
+const WAIT_SLACK_MS: u64 = 5_000;
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Protocol revisions this server speaks, newest first. `initialize` echoes the
 /// client's own revision when it is supported, else offers the newest.
@@ -405,7 +421,7 @@ async fn handle_one(stream: &mut TcpStream, app: &AppHandle, token: &str) -> std
                 .and_then(|v| v.parse::<usize>().ok())
                 .unwrap_or(200)
                 .clamp(1, CONSOLE_CAPACITY);
-            write_json(stream, logs_body(app, n)).await
+            write_json(stream, logs_body(app, n, &LogFilter::from_query(query))).await
         }
         ("GET", "/events") => {
             let since = query_param(query, "since")
@@ -525,7 +541,11 @@ async fn handle_mcp_post(
     // where the request is already async, and overwrite the placeholder reply.
     if let Some(deferred) = reply.deferred.take() {
         let result = match deferred.plan {
-            Plan::Frontend { labels, action } => run_frontend_action(app, &labels, &action).await,
+            Plan::Frontend {
+                labels,
+                action,
+                timeout,
+            } => run_frontend_action(app, &labels, &action, timeout).await,
             Plan::Screenshot { label } => screenshot_result(app, &label).await,
         };
         reply = McpReply::json(rpc_ok(&deferred.id, result));
@@ -561,6 +581,10 @@ enum Plan {
     Frontend {
         labels: Vec<String>,
         action: Value,
+        /// Deadline for this dispatch. Almost always `ACTION_TIMEOUT`; the
+        /// exception is `readest_wait`, whose caller picks the budget, so a
+        /// deliberately long wait is not cut off by the transport.
+        timeout: Duration,
     },
     Screenshot {
         label: String,
@@ -621,9 +645,15 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
 
 /// Relays one action to one window and waits for its report. A closed or wedged
 /// window is an error for the caller — never a hang.
-async fn dispatch_action(app: &AppHandle, label: &str, action: &Value) -> Result<Value, String> {
-    let (reply, answer) = tokio::sync::oneshot::channel();
+async fn dispatch_action(
+    app: &AppHandle,
+    label: &str,
+    action: &Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
     let id = uuid::Uuid::new_v4().simple().to_string();
+    let event = json!({"id": id, "action": action});
     app.state::<DebugState>()
         .pending
         .lock()
@@ -632,19 +662,32 @@ async fn dispatch_action(app: &AppHandle, label: &str, action: &Value) -> Result
     let drop_pending = |id: &str| {
         app.state::<DebugState>().pending.lock().unwrap().remove(id);
     };
-    if let Err(e) = app.emit_to(label, ACTION_EVENT, json!({"id": id, "action": action})) {
-        drop_pending(&id);
-        return Err(format!("cannot reach window '{label}': {e}"));
-    }
-    match tokio::time::timeout(ACTION_TIMEOUT, answer).await {
-        Ok(Ok(report)) => Ok(report),
-        Ok(Err(_)) => Err(format!("window '{label}' closed before reporting")),
-        Err(_) => {
+    // Re-send the same id until the window reports. Tauri events are
+    // fire-and-forget: an action aimed at a window whose JS listener is not
+    // registered yet (still mounting, or just started reloading) is dropped, and
+    // this is the cheap recovery. The frontend skips an id it has already run,
+    // so the repeat cannot run an action — an `open_book` above all — twice.
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             drop_pending(&id);
-            Err(format!(
+            return Err(format!(
                 "window '{label}' did not report within {}s",
-                ACTION_TIMEOUT.as_secs()
-            ))
+                timeout.as_secs()
+            ));
+        }
+        if let Err(e) = app.emit_to(label, ACTION_EVENT, &event) {
+            drop_pending(&id);
+            return Err(format!("cannot reach window '{label}': {e}"));
+        }
+        match tokio::time::timeout(remaining.min(ACTION_RETRY), &mut answer).await {
+            Ok(Ok(report)) => return Ok(report),
+            Ok(Err(_)) => {
+                drop_pending(&id);
+                return Err(format!("window '{label}' closed before reporting"));
+            }
+            Err(_) => {}
         }
     }
 }
@@ -652,10 +695,15 @@ async fn dispatch_action(app: &AppHandle, label: &str, action: &Value) -> Result
 /// Runs the action in every target window and relays what each reported. The
 /// whole call is only an error when *some* window failed, so a reload-all still
 /// shows the windows that did reload.
-async fn run_frontend_action(app: &AppHandle, labels: &[String], action: &Value) -> Value {
+async fn run_frontend_action(
+    app: &AppHandle,
+    labels: &[String],
+    action: &Value,
+    timeout: Duration,
+) -> Value {
     let mut results = Vec::new();
     for label in labels {
-        results.push(match dispatch_action(app, label, action).await {
+        results.push(match dispatch_action(app, label, action, timeout).await {
             Ok(report) => json!({"window": label, "report": report}),
             Err(error) => json!({"window": label, "error": error}),
         });
@@ -802,11 +850,15 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_logs",
-            "description": "Tail of the browser console across all Readest windows (log/info/warn/error), newest last.",
+            "description": "Tail of the browser console across all Readest windows (log/info/warn/error), newest last. Every filter below is optional and they AND together — use them to cut the cross-window noise (HMR banners, other windows).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "n": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many trailing entries to return (default 200)."}
+                    "n": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many trailing entries to return (default 200)."},
+                    "since": {"type": "integer", "minimum": 0, "description": "Only entries newer than this timestamp in ms (the `ts` of an earlier entry)."},
+                    "window": {"type": "string", "description": "Only entries from this window label."},
+                    "level": {"type": "string", "enum": ["log", "info", "warn", "error"], "description": "Minimum severity to return (log < info < warn < error)."},
+                    "grep": {"type": "string", "description": "Only entries whose text contains this substring, case-insensitive."}
                 },
                 "additionalProperties": false
             }
@@ -866,6 +918,21 @@ fn tool_catalog() -> Value {
             }
         },
         {
+            "name": "readest_wait",
+            "description": "Block until a window is usable, then return. `until: 'ready'` resolves as soon as the window's JS answers — after a `readest_reload` that means the fresh document is up. `until: 'book-loaded'` resolves when the book (the window's first, or `hash`) has finished loading, and fails immediately when the book cannot load or is not open there. Use it before a screenshot, or to give a slow book a budget longer than the actions' own 8s.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."},
+                    "until": {"type": "string", "enum": ["ready", "book-loaded"], "description": "'ready': the window's JS is up and answering. 'book-loaded': its book has loaded."},
+                    "hash": {"type": "string", "description": "Which book to wait for with until='book-loaded' (default: the window's first)."},
+                    "timeout_ms": {"type": "integer", "minimum": 2000, "maximum": 60000, "description": "Budget for the whole call (default 10000)."}
+                },
+                "required": ["window", "until"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "readest_screenshot",
             "description": "PNG screenshot of one window's rendered content, returned as MCP image content so it can be looked at directly. Works while the window is occluded. Windows only.",
             "inputSchema": {
@@ -892,7 +959,7 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                 .and_then(Value::as_u64)
                 .unwrap_or(200)
                 .clamp(1, CONSOLE_CAPACITY as u64) as usize;
-            Some(logs_body(app, n))
+            Some(logs_body(app, n, &LogFilter::from_args(args)))
         }
         "readest_events" => {
             let since = args.get("since").and_then(Value::as_u64).unwrap_or(0);
@@ -925,6 +992,7 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
             Some(ToolOutcome::Deferred(Plan::Frontend {
                 labels: vec!["main".to_string()],
                 action: json!({"kind": "open-book", "hashes": hashes}),
+                timeout: ACTION_TIMEOUT,
             }))
         }
         "readest_goto" => {
@@ -951,6 +1019,7 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "cfi": cfi,
                     "page": page,
                 }),
+                timeout: ACTION_TIMEOUT,
             }))
         }
         "readest_reload" => {
@@ -969,6 +1038,43 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
             Some(ToolOutcome::Deferred(Plan::Frontend {
                 labels,
                 action: json!({"kind": "reload"}),
+                timeout: ACTION_TIMEOUT,
+            }))
+        }
+        // The one action whose caller owns the deadline. It is also the only way
+        // to wait for something no other tool waits for: a window that just
+        // reloaded, or a book that needs longer than `goto`'s own 8s.
+        "readest_wait" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            let until = args.get("until").and_then(Value::as_str).unwrap_or("");
+            if !matches!(until, "ready" | "book-loaded") {
+                return Some(ToolOutcome::Ready(error_result(
+                    "until must be 'ready' (the window's JS is up and answering) or 'book-loaded'",
+                )));
+            }
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            let budget = args
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(WAIT_DEFAULT_MS)
+                .clamp(WAIT_MIN_MS, WAIT_MAX_MS);
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({
+                    "kind": "wait",
+                    "until": until,
+                    "hash": args.get("hash"),
+                    // camelCase, and already inside the frontend's own budget:
+                    // the payload is read by src/services/debugReport.ts.
+                    "timeoutMs": budget - WAIT_MARGIN_MS,
+                }),
+                timeout: Duration::from_millis(budget + WAIT_SLACK_MS),
             }))
         }
         "readest_screenshot" => {
@@ -1029,12 +1135,83 @@ fn state_body(app: &AppHandle) -> Value {
     json!({"windows": windows})
 }
 
-fn logs_body(app: &AppHandle, n: usize) -> Value {
+fn logs_body(app: &AppHandle, n: usize, filter: &LogFilter) -> Value {
     let debug: State<'_, DebugState> = app.state();
     let console = debug.console.lock().unwrap();
-    let skip = console.len().saturating_sub(n);
-    let entries: Vec<&Value> = console.iter().skip(skip).collect();
-    json!({"entries": entries, "total": console.len()})
+    let matched: Vec<&Value> = console
+        .iter()
+        .filter(|entry| filter.matches(entry))
+        .collect();
+    let count = matched.len();
+    let entries: Vec<&Value> = matched.into_iter().skip(count.saturating_sub(n)).collect();
+    json!({"entries": entries, "matched": count, "total": console.len()})
+}
+
+/// Narrowing for the console tail: all fields optional, and they AND together.
+/// A debugging session wants "the errors from this window", not the whole
+/// cross-window tail with `[Fast Refresh] done in 148ms` in it.
+#[derive(Default)]
+struct LogFilter {
+    since: Option<u64>,
+    window: Option<String>,
+    /// Minimum severity — `log` < `info` < `warn` < `error`, like a log level.
+    level: Option<String>,
+    /// Case-insensitive substring of the entry text.
+    grep: Option<String>,
+}
+
+/// Severity order for `level`; anything unrecognized ranks lowest.
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "error" => 4,
+        "warn" => 3,
+        "info" => 2,
+        "log" => 1,
+        _ => 0,
+    }
+}
+
+impl LogFilter {
+    fn from_args(args: &Value) -> Self {
+        let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
+        Self {
+            since: args.get("since").and_then(Value::as_u64),
+            window: text("window"),
+            level: text("level"),
+            grep: text("grep"),
+        }
+    }
+
+    /// The JSON endpoint takes the same four names as query parameters (not
+    /// URL-decoded — a space has to be sent as `grep=fast%20refresh`, which
+    /// matches nothing, so keep such filters in the tool call).
+    fn from_query(query: &str) -> Self {
+        let text = |key: &str| query_param(query, key).map(str::to_string);
+        Self {
+            since: query_param(query, "since").and_then(|v| v.parse().ok()),
+            window: text("window"),
+            level: text("level"),
+            grep: text("grep"),
+        }
+    }
+
+    fn matches(&self, entry: &Value) -> bool {
+        let field = |key: &str| entry.get(key).and_then(Value::as_str).unwrap_or("");
+        self.since
+            .is_none_or(|since| entry["ts"].as_u64().unwrap_or(0) > since)
+            && self
+                .window
+                .as_deref()
+                .is_none_or(|window| field("label") == window)
+            && self
+                .level
+                .as_deref()
+                .is_none_or(|level| level_rank(field("level")) >= level_rank(level))
+            && self
+                .grep
+                .as_deref()
+                .is_none_or(|grep| field("text").to_lowercase().contains(&grep.to_lowercase()))
+    }
 }
 
 fn events_body(app: &AppHandle, since: u64) -> Value {
@@ -1182,6 +1359,34 @@ mod tests {
     }
 
     #[test]
+    fn log_filters_narrow_the_console_tail() {
+        let entry = |level: &str, label: &str, text: &str| json!({"ts": 5, "level": level, "label": label, "text": text});
+        let level = LogFilter {
+            level: Some("warn".to_string()),
+            ..Default::default()
+        };
+        assert!(level.matches(&entry("warn", "main", "a")));
+        assert!(level.matches(&entry("error", "main", "a")));
+        assert!(!level.matches(&entry("info", "main", "a")));
+
+        let noisy = LogFilter {
+            window: Some("reader-1".to_string()),
+            grep: Some("FAST".to_string()),
+            ..Default::default()
+        };
+        assert!(noisy.matches(&entry("log", "reader-1", "fast refresh done in 148ms")));
+        assert!(!noisy.matches(&entry("log", "main", "fast refresh done in 148ms")));
+        assert!(!noisy.matches(&entry("log", "reader-1", "other")));
+
+        let later = LogFilter {
+            since: Some(9),
+            ..Default::default()
+        };
+        assert!(!later.matches(&entry("log", "main", "a")));
+        assert!(LogFilter::default().matches(&entry("log", "main", "a")));
+    }
+
+    #[test]
     fn initialize_echoes_a_supported_protocol_version() {
         let reply = mcp_message(
             &no_tools,
@@ -1226,6 +1431,7 @@ mod tests {
                 "readest_open_book",
                 "readest_goto",
                 "readest_reload",
+                "readest_wait",
                 "readest_screenshot",
             ]
         );
@@ -1262,6 +1468,7 @@ mod tests {
             "readest_goto" => Some(ToolOutcome::Deferred(Plan::Frontend {
                 labels: vec!["reader-1".to_string()],
                 action: json!({"kind": "goto", "cfi": "epubcfi(/6/4)"}),
+                timeout: ACTION_TIMEOUT,
             })),
             _ => None,
         };
@@ -1273,9 +1480,16 @@ mod tests {
         let deferred = reply.deferred.expect("deferred plan");
         assert_eq!(deferred.id, 1);
         match deferred.plan {
-            Plan::Frontend { labels, action } => {
+            Plan::Frontend {
+                labels,
+                action,
+                timeout,
+            } => {
                 assert_eq!(labels, ["reader-1"]);
                 assert_eq!(action["kind"], "goto");
+                // The dispatch deadline travels with the plan: `readest_wait`
+                // sets its own, everything else the standard one.
+                assert_eq!(timeout, ACTION_TIMEOUT);
             }
             Plan::Screenshot { .. } => panic!("wrong plan"),
         }

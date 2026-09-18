@@ -26,6 +26,13 @@ import { clampPage, fractionForPage } from '@/app/reader/components/footerbar/pa
 const CONSOLE_FLUSH_INTERVAL_MS = 500;
 const STATE_INTERVAL_MS = 2000;
 const CONSOLE_BUFFER_LIMIT = 500;
+/// An action that needs the window to catch up (a reader window the app is
+/// still creating, a book still loading) waits here instead of failing, so the
+/// caller does not have to retry. Kept under ACTION_TIMEOUT in
+/// src-tauri/src/debug_server.rs, so a window that never gets there reports its
+/// own reason instead of the transport timing out first.
+const READY_TIMEOUT_MS = 8000;
+const READY_POLL_MS = 200;
 /// Matches ACTION_EVENT in src-tauri/src/debug_server.rs.
 const ACTION_EVENT = 'debug://action';
 
@@ -38,6 +45,9 @@ declare global {
     /// re-runs the effects that call `initDebugReporting`), so the one-listener
     /// guard has to live on the document, not in module state.
     __readestDebugActionListener?: boolean;
+    /// Action ids this window has already taken. Rust re-sends an action until
+    /// it hears back (see `dispatch_action`), so the same id can arrive twice.
+    __readestDebugHandledActions?: Set<string>;
   }
 }
 
@@ -171,11 +181,15 @@ export const initDebugReporting = async () => {
 // ── Actions (Rust → this window) ────────────────────────────────────────────
 
 interface DebugAction {
-  kind: 'open-book' | 'goto' | 'reload';
+  kind: 'open-book' | 'goto' | 'reload' | 'wait';
   hashes?: string[];
   hash?: string;
   cfi?: string;
   page?: number;
+  until?: 'ready' | 'book-loaded';
+  /// The frontend's own deadline for a `wait`, already reduced by the Rust
+  /// side's WAIT_MARGIN_MS (the transport waits for the full budget).
+  timeoutMs?: number;
 }
 
 /// An action's report, plus work that must not start until Rust has it: a
@@ -191,6 +205,64 @@ const findBookKey = (hash?: string): string | null => {
   return bookKeys.find((key) => key.split('-')[0] === hash) ?? null;
 };
 
+/// Polls `probe` until it reports something, or throws. Probes are in-process
+/// reads (stores, one Rust lookup), so a plain interval is enough; the point is
+/// that the caller gets one answer instead of a "not ready yet" to retry.
+const waitFor = async <T>(
+  probe: () => T | null | Promise<T | null>,
+  what: string,
+  timeoutMs = READY_TIMEOUT_MS,
+): Promise<T> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await probe();
+    if (value) return value;
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
+  }
+};
+
+/// The key of the book an action targets in this window, once the window can
+/// have one. Two ways it never will, both worth failing immediately instead of
+/// spending the whole wait budget: the window is not on a reader route at all,
+/// or its book set — seeded whole from the route's `?ids=` before anything loads
+/// — does not include ours.
+const waitForBookKey = (hash: string | undefined, timeoutMs?: number) =>
+  waitFor(
+    () => {
+      const { bookKeys } = useReaderStore.getState();
+      if (!window.location.pathname.startsWith('/reader')) {
+        throw new Error(
+          `no book is open in this window: ${window.location.pathname} is not a reader route`,
+        );
+      }
+      if (hash && bookKeys.length && !findBookKey(hash)) {
+        throw new Error(`book ${hash} is not open in this window`);
+      }
+      return findBookKey(hash);
+    },
+    'a book to be open in this window',
+    timeoutMs,
+  );
+
+/// The loaded view of `key`. The view only registers once its document is open,
+/// and reports `inited` once it has loaded and been placed — the point a `goTo`
+/// lands. Same readiness the app's own waits use (see `goToCfiWhenReady` in
+/// useBooksManager): a load that failed is over, not "not yet".
+const waitForView = (key: string, timeoutMs?: number) =>
+  waitFor(
+    () => {
+      const viewState = useReaderStore.getState().getViewState(key);
+      if (viewState?.error) {
+        throw new Error(`book ${key.split('-')[0]} failed to load: ${viewState.error}`);
+      }
+      return viewState?.inited ? viewState.view : null;
+    },
+    `book ${key.split('-')[0]} to finish loading in this window`,
+    timeoutMs,
+  );
 const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
   const fail = (error: string): ActionOutcome => ({ result: { ok: false, error } });
   switch (action.kind) {
@@ -203,15 +275,18 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
         return { result: { ok: true, focused: hashes[0] } };
       }
       showReaderWindow(await envConfig.getAppService(), hashes);
-      return { result: { ok: true, opened: hashes } };
+      // The window is created by the Rust side, and only then does it carry the
+      // `?ids=` that names its book. Waiting for it here is what lets the reply
+      // name the window, so the caller can go straight on to goto/screenshot.
+      const window = await waitFor(
+        () => invoke<string | null>('find_reader_window_with_book', { hash: hashes[0]! }),
+        `the reader window for ${hashes[0]} to appear`,
+      );
+      return { result: { ok: true, opened: hashes, window } };
     }
     case 'goto': {
-      const key = findBookKey(action.hash);
-      if (!key) return fail('no book is open in this window');
-      const view = useReaderStore.getState().getView(key);
-      // The view only registers once the book has loaded, while a freshly
-      // opened window already reports the book it is about to show.
-      if (!view) return fail(`book ${key.split('-')[0]} is still loading in this window`);
+      const key = await waitForBookKey(action.hash);
+      const view = await waitForView(key);
       // The published `FoliateView` type calls goTo void-returning, but the
       // wrapped view returns the navigation promise (see types/view.ts).
       if (action.cfi) {
@@ -219,9 +294,16 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
         return { result: { ok: true, book: key, cfi: action.cfi } };
       }
       if (typeof action.page !== 'number') return fail('goto needs cfi or page');
-      const progress = getBookProgress(key);
-      const pageInfo = view.isFixedLayout ? progress?.section : progress?.pageinfo;
-      if (!pageInfo?.total) return fail('this book has no page count yet');
+      // The page count lands after the load: on a reflowable book from
+      // `pageinfo`, on a fixed-layout one from `section`.
+      const pageInfo = await waitFor(
+        () => {
+          const progress = getBookProgress(key);
+          const info = view.isFixedLayout ? progress?.section : progress?.pageinfo;
+          return info?.total ? info : null;
+        },
+        `book ${key.split('-')[0]} to report a page count`,
+      );
       const page = clampPage(action.page, pageInfo.total);
       if (view.isFixedLayout) await Promise.resolve(view.goTo(page - 1));
       else await Promise.resolve(view.goToFraction(fractionForPage(page, pageInfo.total)));
@@ -233,12 +315,29 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       await eventDispatcher.dispatch('beforereload');
       return { result: { ok: true, reloading: true }, after: () => window.location.reload() };
     }
+    case 'wait': {
+      // Reaching this line at all means the dispatch found a live listener —
+      // Rust re-sends until one answers — so `ready` is answered by the fact
+      // that we are running. `boot` is reported so a caller can tell this
+      // document apart from the one it reloaded.
+      const label = getCurrentWindow().label;
+      const boot = Math.round(performance.timeOrigin);
+      if (action.until !== 'book-loaded') return { result: { ok: true, window: label, boot } };
+      // Same readiness `goto` waits for, so the two cannot disagree about what
+      // "loaded" means — only the budget differs.
+      const key = await waitForBookKey(action.hash, action.timeoutMs);
+      await waitForView(key, action.timeoutMs);
+      return { result: { ok: true, window: label, book: key, loaded: true } };
+    }
   }
 };
 
 const listenForActions = (): void => {
   if (window.__readestDebugActionListener) return;
   window.__readestDebugActionListener = true;
+  // On the document, not in module state: Fast Refresh re-evaluates this module
+  // while the listener registered below stays live.
+  const handled = (window.__readestDebugHandledActions ??= new Set<string>());
   // Scope the listener to this window: an event emitted to one label still
   // reaches every window whose listener targets `Any` (Tauri's `emit_to` only
   // narrows listeners that name a label), which would run each action in every
@@ -247,8 +346,14 @@ const listenForActions = (): void => {
   void listen<{ id: string; action: DebugAction }>(
     ACTION_EVENT,
     async ({ payload }) => {
+      // Claimed synchronously, before the first await, so Rust's re-send of an
+      // action still in flight cannot run it a second time.
+      if (handled.has(payload.id)) return;
+      handled.add(payload.id);
       const outcome = await runDebugAction(payload.action).catch(
-        (error: unknown): ActionOutcome => ({ result: { ok: false, error: String(error) } }),
+        (error: unknown): ActionOutcome => ({
+          result: { ok: false, error: error instanceof Error ? error.message : String(error) },
+        }),
       );
       // Report before running `after`: a reload drops the in-flight call.
       await invoke('debug_action_result', { id: payload.id, result: outcome.result }).catch(

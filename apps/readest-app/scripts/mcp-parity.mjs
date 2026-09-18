@@ -80,6 +80,7 @@ check(
       'readest_reload',
       'readest_screenshot',
       'readest_state',
+      'readest_wait',
     ].join(','),
   'tools/list',
   names.join(', '),
@@ -100,15 +101,48 @@ for (const [name, args] of [
   );
 }
 
+// readest_logs filters: every entry must clear the requested level, and an
+// impossible grep must come back empty rather than unfiltered.
+const logsText = async (args) =>
+  JSON.parse(
+    JSON.parse((await call('tools/call', { name: 'readest_logs', arguments: args })).body).result
+      .content[0].text,
+  );
+const errors = await logsText({ n: 50, level: 'error' });
+check(
+  errors.entries.every((entry) => entry.level === 'error'),
+  'readest_logs level filter',
+  `${errors.entries.length} of ${errors.matched} error entries`,
+);
+const quiet = await logsText({ n: 5, level: 'error', grep: 'no-such-log-line-zzz' });
+check(
+  quiet.entries.length === 0 && quiet.matched === 0,
+  'readest_logs grep filter',
+  JSON.stringify(quiet).slice(0, 120),
+);
+
 // Action tools: argument validation and targeting happen before anything runs,
 // so these two need no reader window and touch nothing.
 for (const [name, args, why] of [
   ['readest_goto', { cfi: 'epubcfi(/6/4)' }, 'missing window'],
   ['readest_screenshot', { window: 'no-such-window' }, 'unknown window'],
+  ['readest_wait', { window: 'no-such-window', until: 'ready' }, 'unknown window'],
+  ['readest_wait', { window: 'main' }, "until missing"],
+  ['readest_wait', { window: 'main', until: 'whenever' }, 'unknown until'],
 ]) {
   const call_ = JSON.parse((await call('tools/call', { name, arguments: args })).body);
   check(call_.result?.isError === true, `${name} rejects ${why}`, JSON.stringify(call_.result).slice(0, 120));
 }
+
+// until=ready resolves against the library window immediately, and reports the
+// document's boot so a caller can tell one document from the next.
+const waited = JSON.parse((await call('tools/call', { name: 'readest_wait', arguments: { window: 'main', until: 'ready', timeout_ms: 2000 } })).body);
+const ready = JSON.parse(waited.result.content[0].text).results[0].report;
+check(
+  typeof ready?.boot === 'number' && ready.boot > 0,
+  'readest_wait until=ready answers on main',
+  JSON.stringify(ready).slice(0, 120),
+);
 
 // A screenshot of a live window is PNG image content, not text.
 const state = JSON.parse(JSON.parse((await call('tools/call', { name: 'readest_state' })).body).result.content[0].text);

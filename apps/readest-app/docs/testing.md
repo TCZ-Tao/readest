@@ -264,32 +264,42 @@ per-client registration script:
 | --------------------- | -------------------------------------------------------------------------- |
 | `GET /health`         | pid, uptime, app version (also verifies the bearer token)                   |
 | `GET /state`          | window list (label/title/URL), books per reader window (`?ids=`), per-window JS snapshots (open books + live progress, the library's `{hash,title}` list, and `boot` — `performance.timeOrigin`, so a reload is visible as a boot change) |
-| `GET /logs?n=200`     | browser-console tail across all windows (labelled)                          |
+| `GET /logs?n=200`     | browser-console tail across all windows (labelled); narrow it with `since=&window=&level=&grep=` (the same filters as `readest_logs`, taken verbatim from the query string) |
 | `GET /events?since=0` | window lifecycle events (close_requested/destroyed/focused/blurred), incremental ids |
 | `POST /mcp`           | MCP Streamable HTTP: `initialize`, `notifications/initialized`, `tools/list`, `tools/call` (JSON-RPC 2.0; sessions via `Mcp-Session-Id`, `GET /mcp` keepalive stream, `DELETE /mcp` closes a session) |
 | `GET /mcp`            | `text/event-stream` keepalive for clients that open the server→client stream |
 
-The state tools are `readest_state`, `readest_logs {n}`, `readest_events {since}`
-— the same three payloads as the JSON endpoints.
+The state tools are `readest_state`, `readest_logs {n, since?, window?, level?,
+grep?}` (the filters AND together; `level` is a minimum severity, `grep` a
+case-insensitive substring), and `readest_events {since}` — the same three
+payloads as the JSON endpoints.
 
 ### Action tools
 
 | Tool                          | Does                                                            |
 | ----------------------------- | --------------------------------------------------------------- |
-| `readest_open_book {hashes}`  | Focus the reader window that already holds a single hash, else open one (the window appears asynchronously — poll `readest_state`) |
-| `readest_goto {window, hash?, cfi?, page?}` | Move that reader window's view to a CFI/href or a 1-based page (the footer's own page-input path — `pageinfo` is section-local on reflowable books, so pass `cfi` when the exact spot matters) |
+| `readest_open_book {hashes}`  | Focus the reader window that already holds a single hash, else open one. Waits for the new window to appear and returns its label as `window` |
+| `readest_goto {window, hash?, cfi?, page?}` | Move that reader window's view to a CFI/href or a 1-based page (the footer's own page-input path — `pageinfo` is section-local on reflowable books, so pass `cfi` when the exact spot matters). Waits inside the window for the book to load (and for its page count when jumping by page); a window that is not a reader route, does not hold the book, or whose load reported an error is rejected immediately |
 | `readest_reload {window?}`    | Reload that window, or every window when `window` is omitted    |
+| `readest_wait {window, until, hash?, timeout_ms?}` | Block until the window is usable: `until: 'ready'` means its JS answers (after a reload, the fresh document; returns its `boot`), `until: 'book-loaded'` means the book has loaded — the same readiness `readest_goto` waits for, which is what lets a caller give a slow book a longer budget than the actions' own 8s |
 | `readest_screenshot {window}` | PNG of the window's rendered content, as MCP image content      |
 
 Rust sends each action to the named webview as a `debug://action` event
 (served by `src/services/debugReport.ts`), the window runs it and reports back
 through `debug_action_result`; a window that never answers times out instead of
-hanging the tool call. Reload goes through the app's own `beforereload` chain so
-reading positions are saved first, and `readest_open_book` / `readest_goto` reuse
-`showReaderWindow` / `focusExistingReaderWindow` and the reader's own `view.goTo`
+hanging the tool call. `readest_open_book` / `readest_goto` bound their own waits
+in the frontend (8s, under the default 10s transport timeout) so a book that
+never loads reports *why* rather than making the caller retry; `readest_wait`
+instead carries a per-dispatch deadline (`Plan::Frontend.timeout`) taken from the
+caller's `timeout_ms`, and the frontend's share of it is 1s less (the transport
+keeps a further 5s of slack, since a window mid-reload may only see the action
+seconds after the call started), so the reason still comes from the frontend. Reload goes through the app's own `beforereload`
+chain so reading positions are saved first, and `readest_open_book` /
+`readest_goto` reuse `showReaderWindow` / `focusExistingReaderWindow` and the
+reader's own `view.goTo`
 — the UI's code paths, not a parallel implementation of them.
 
-Two traps worth remembering when touching this wiring:
+Three traps worth remembering when touching this wiring:
 
 - Tauri's `emit_to(label, …)` only narrows JS listeners that registered a label;
   a default `listen()` targets `Any` and therefore receives events aimed at *any*
@@ -298,6 +308,11 @@ Two traps worth remembering when touching this wiring:
 - Registration is guarded both in module state and on `window`, because a
   StrictMode double effect or a Fast Refresh re-run otherwise adds a second
   action listener — and one dispatch would then open a window per listener.
+- Tauri events are fire-and-forget: an action sent to a window whose listener is
+  not registered yet (still mounting, or just started reloading) is dropped. So
+  `dispatch_action` re-sends the same id every second until it is answered, and
+  the frontend claims the id before its first `await` so a repeat cannot run an
+  action twice.
 
 `readest_screenshot` is Windows-only: it calls WebView2's
 `ICoreWebView2::CapturePreview` through `with_webview`, because WebView2 renders
