@@ -282,6 +282,9 @@ payloads as the JSON endpoints.
 | `readest_goto {window, hash?, cfi?, page?}` | Move that reader window's view to a CFI/href or a 1-based page (the footer's own page-input path — `pageinfo` is section-local on reflowable books, so pass `cfi` when the exact spot matters). Waits inside the window for the book to load (and for its page count when jumping by page); a window that is not a reader route, does not hold the book, or whose load reported an error is rejected immediately |
 | `readest_reload {window?}`    | Reload that window, or every window when `window` is omitted    |
 | `readest_wait {window, until, hash?, timeout_ms?}` | Block until the window is usable: `until: 'ready'` means its JS answers (after a reload, the fresh document; returns its `boot`), `until: 'book-loaded'` means the book has loaded — the same readiness `readest_goto` waits for, which is what lets a caller give a slow book a longer budget than the actions' own 8s |
+| `readest_close_window {window}` | Close that window through its own close path (the title-bar ✕: `tauriHandleClose`, which saves the reading position and tells the library window). Closing the last window can end the process |
+| `readest_click {window, selector}` | Focus and click the first element matching a CSS selector, and report what was clicked. Nothing matching comes back with the window's visible interactive elements to pick a selector from. Only the window's own document — book content lives in its own document, so use `readest_goto`/`readest_press` for reading |
+| `readest_press {window, key, modifiers?}` | Press one key through the app's own shortcut layer (`useShortcuts`, the same one real key presses reach). `handled` says whether a shortcut claimed it. Modifiers are `ctrl`/`alt`/`shift`/`meta`; a misspelt one is rejected rather than silently dropping to the bare key |
 | `readest_screenshot {window}` | PNG of the window's rendered content, as MCP image content      |
 
 Rust sends each action to the named webview as a `debug://action` event
@@ -293,10 +296,14 @@ never loads reports *why* rather than making the caller retry; `readest_wait`
 instead carries a per-dispatch deadline (`Plan::Frontend.timeout`) taken from the
 caller's `timeout_ms`, and the frontend's share of it is 1s less (the transport
 keeps a further 5s of slack, since a window mid-reload may only see the action
-seconds after the call started), so the reason still comes from the frontend. Reload goes through the app's own `beforereload`
-chain so reading positions are saved first, and `readest_open_book` /
-`readest_goto` reuse `showReaderWindow` / `focusExistingReaderWindow` and the
-reader's own `view.goTo`
+seconds after the call started), so the reason still comes from the frontend. `readest_click` and `readest_press` drive the real
+UI — a click goes in as a focus plus a `click` event, a press as a `keydown` on
+whichever element a real keystroke would target, both synthetic
+(`isTrusted: false`; nothing in the app checks that flag) — and neither reaches
+the book's own document, which has its own event listeners. Reload goes through
+the app's own `beforereload` chain so reading positions are saved first, and
+`readest_open_book` / `readest_goto` reuse `showReaderWindow` /
+`focusExistingReaderWindow` and the reader's own `view.goTo`
 — the UI's code paths, not a parallel implementation of them.
 
 Three traps worth remembering when touching this wiring:

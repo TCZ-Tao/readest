@@ -933,6 +933,45 @@ fn tool_catalog() -> Value {
             }
         },
         {
+            "name": "readest_close_window",
+            "description": "Close one window through its own close path — the one the title-bar ✕ runs, so the reading position is saved and the library window is told. Closing the last window can end the process, and with it this server.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_click",
+            "description": "Click the first element matching a CSS selector, the way a user click reaches the app (it is focused, then gets a click event). The reply names what was clicked; when nothing matches it lists the window's visible interactive elements so you can pick a selector. Book content has its own document and is not covered — use readest_goto or readest_press for reading. Clicking reaches destructive UI too (a delete dialog's confirm button included); nothing here stops you.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."},
+                    "selector": {"type": "string", "description": "CSS selector, e.g. '#toc-button' or '[data-testid=...]'."}
+                },
+                "required": ["window", "selector"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_press",
+            "description": "Press one key in a window, through the app's own shortcut handling — the same path a real key press reaches. `handled` in the reply says whether a shortcut claimed it. ArrowRight/ArrowLeft turn pages in a reader, Escape closes what has focus. The app's shortcut layer ignores keys while an input has focus, exactly as it does for a user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."},
+                    "key": {"type": "string", "description": "KeyboardEvent key value: 'ArrowRight', 'Escape', 'b', ..."},
+                    "modifiers": {"type": "array", "items": {"type": "string", "enum": ["ctrl", "alt", "shift", "meta"]}, "description": "Modifiers held down with the key."}
+                },
+                "required": ["window", "key"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "readest_screenshot",
             "description": "PNG screenshot of one window's rendered content, returned as MCP image content so it can be looked at directly. Works while the window is occluded. Windows only.",
             "inputSchema": {
@@ -1075,6 +1114,88 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "timeoutMs": budget - WAIT_MARGIN_MS,
                 }),
                 timeout: Duration::from_millis(budget + WAIT_SLACK_MS),
+            }))
+        }
+        // Closing goes through the window's own close path in the frontend —
+        // `tauriHandleClose`, which is what the title-bar ✕ runs: the reading
+        // position is saved and `main` is told. A Rust-side `window.close()`
+        // would skip that, and the window would be gone before it could report,
+        // so the action reports first and closes afterwards.
+        "readest_close_window" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({"kind": "close"}),
+                timeout: ACTION_TIMEOUT,
+            }))
+        }
+        "readest_click" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            let Some(selector) = args
+                .get("selector")
+                .and_then(Value::as_str)
+                .filter(|selector| !selector.is_empty())
+            else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "selector is required: pass a CSS selector for the element to click",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({"kind": "click", "selector": selector}),
+                timeout: ACTION_TIMEOUT,
+            }))
+        }
+        "readest_press" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            let Some(key) = args
+                .get("key")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+            else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "key is required: pass a key value such as ArrowRight or Escape",
+                )));
+            };
+            let modifiers = string_array(args.get("modifiers"));
+            // Ignoring a misspelt modifier would press the bare key and look
+            // like the shortcut simply was not bound.
+            let unknown: Vec<&str> = modifiers
+                .iter()
+                .map(String::as_str)
+                .filter(|modifier| !["ctrl", "alt", "shift", "meta"].contains(modifier))
+                .collect();
+            if !unknown.is_empty() {
+                return Some(ToolOutcome::Ready(error_result(format!(
+                    "unknown modifier(s) {}: use ctrl, alt, shift, meta",
+                    unknown.join(", ")
+                ))));
+            }
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({"kind": "press", "key": key, "modifiers": modifiers}),
+                timeout: ACTION_TIMEOUT,
             }))
         }
         "readest_screenshot" => {
@@ -1432,6 +1553,9 @@ mod tests {
                 "readest_goto",
                 "readest_reload",
                 "readest_wait",
+                "readest_close_window",
+                "readest_click",
+                "readest_press",
                 "readest_screenshot",
             ]
         );

@@ -1,8 +1,9 @@
 // Dev-only debug reporting for the in-app debug server
 // (src-tauri/src/debug_server.rs). The pushes below are what the /state and
 // /logs endpoints serve, and the action listener at the bottom is the other
-// direction: the `readest_open_book` / `readest_goto` / `readest_reload` MCP
-// tools arrive as an event for the window they name, run here, and report back.
+// direction: the action MCP tools (readest_open_book, readest_goto, readest_click,
+// readest_press, ...) arrive as an event for the window they name, run here, and
+// report back.
 // Self-gating: the probe invoke only resolves when the debug server is compiled
 // in (desktop debug builds), so normal builds turn this into a no-op without any
 // injected flag — which matters because JS-created windows (reader-*) don't
@@ -21,6 +22,7 @@ import { useLibraryStore } from '@/store/libraryStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { eventDispatcher } from '@/utils/event';
 import { focusExistingReaderWindow, showReaderWindow } from '@/utils/nav';
+import { tauriHandleClose } from '@/utils/window';
 import { clampPage, fractionForPage } from '@/app/reader/components/footerbar/pageJump';
 
 const CONSOLE_FLUSH_INTERVAL_MS = 500;
@@ -181,7 +183,7 @@ export const initDebugReporting = async () => {
 // ── Actions (Rust → this window) ────────────────────────────────────────────
 
 interface DebugAction {
-  kind: 'open-book' | 'goto' | 'reload' | 'wait';
+  kind: 'open-book' | 'goto' | 'reload' | 'wait' | 'close' | 'click' | 'press';
   hashes?: string[];
   hash?: string;
   cfi?: string;
@@ -190,6 +192,9 @@ interface DebugAction {
   /// The frontend's own deadline for a `wait`, already reduced by the Rust
   /// side's WAIT_MARGIN_MS (the transport waits for the full budget).
   timeoutMs?: number;
+  selector?: string;
+  key?: string;
+  modifiers?: string[];
 }
 
 /// An action's report, plus work that must not start until Rust has it: a
@@ -263,8 +268,34 @@ const waitForView = (key: string, timeoutMs?: number) =>
     `book ${key.split('-')[0]} to finish loading in this window`,
     timeoutMs,
   );
+/// What was hit by a click, or what a failed click could have aimed at.
+const describeElement = (element: HTMLElement) => ({
+  tag: element.tagName.toLowerCase(),
+  text: element.textContent?.trim().slice(0, 60) || undefined,
+  testid: element.dataset['testid'],
+  ariaLabel: element.getAttribute('aria-label') ?? undefined,
+});
+
+/// The window's visible interactive elements, in document order. Without a DOM
+/// viewer this is what turns "nothing matches that selector" into a selector the
+/// caller can actually use.
+const interactiveElements = () =>
+  Array.from(
+    document.querySelectorAll<HTMLElement>(
+      'button,a,[role],summary,input,select,textarea,[data-testid]',
+    ),
+  )
+    .filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    })
+    .slice(0, 25)
+    .map(describeElement);
+
 const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
-  const fail = (error: string): ActionOutcome => ({ result: { ok: false, error } });
+  const fail = (error: string, extra?: Record<string, unknown>): ActionOutcome => ({
+    result: { ok: false, error, ...extra },
+  });
   switch (action.kind) {
     case 'open-book': {
       // Same entry points the library uses, so an already-open book is focused
@@ -328,6 +359,56 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       const key = await waitForBookKey(action.hash, action.timeoutMs);
       await waitForView(key, action.timeoutMs);
       return { result: { ok: true, window: label, book: key, loaded: true } };
+    }
+    case 'close': {
+      // The title-bar ✕ path, so the reading position is saved on the way out
+      // (`handleCloseBooks` in ReaderContent); a bare Tauri close skips that.
+      // Report first — closing takes the JS context with it.
+      return { result: { ok: true, closing: true }, after: () => void tauriHandleClose() };
+    }
+    case 'click': {
+      const element = document.querySelector<HTMLElement>(action.selector!);
+      if (!element) {
+        return fail(`nothing matches ${action.selector} in this window`, {
+          candidates: interactiveElements(),
+        });
+      }
+      const rect = element.getBoundingClientRect();
+      // Focus first: a real click focuses what it hits, and the shortcut layer
+      // reads `document.activeElement` to decide whether the user is typing.
+      element.focus({ preventScroll: true });
+      element.click();
+      return {
+        result: {
+          ok: true,
+          clicked: describeElement(element),
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        },
+      };
+    }
+    case 'press': {
+      const modifiers = new Set(action.modifiers ?? []);
+      // Dispatched on whatever a real keystroke would target, so the event
+      // travels the same path: focus check, then the app's shortcut layer on
+      // the window (`useShortcuts`). `handled` comes from that layer calling
+      // preventDefault, which is how it reports having claimed the key.
+      const event = new KeyboardEvent('keydown', {
+        key: action.key!,
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: modifiers.has('ctrl'),
+        altKey: modifiers.has('alt'),
+        shiftKey: modifiers.has('shift'),
+        metaKey: modifiers.has('meta'),
+      });
+      const target = document.activeElement ?? document.body;
+      const handled = !target.dispatchEvent(event);
+      return { result: { ok: true, key: action.key, handled } };
     }
   }
 };

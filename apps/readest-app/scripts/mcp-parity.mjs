@@ -73,10 +73,13 @@ const names = (list.result?.tools ?? []).map((tool) => tool.name).sort();
 check(
   names.join(',') ===
     [
+      'readest_click',
+      'readest_close_window',
       'readest_events',
       'readest_goto',
       'readest_logs',
       'readest_open_book',
+      'readest_press',
       'readest_reload',
       'readest_screenshot',
       'readest_state',
@@ -129,10 +132,33 @@ for (const [name, args, why] of [
   ['readest_wait', { window: 'no-such-window', until: 'ready' }, 'unknown window'],
   ['readest_wait', { window: 'main' }, "until missing"],
   ['readest_wait', { window: 'main', until: 'whenever' }, 'unknown until'],
+  ['readest_close_window', {}, 'missing window'],
+  ['readest_click', { window: 'main' }, 'missing selector'],
+  ['readest_press', { window: 'main' }, 'missing key'],
+  ['readest_press', { window: 'main', key: 'b', modifiers: ['ctl'] }, 'unknown modifier'],
 ]) {
   const call_ = JSON.parse((await call('tools/call', { name, arguments: args })).body);
   check(call_.result?.isError === true, `${name} rejects ${why}`, JSON.stringify(call_.result).slice(0, 120));
 }
+
+// A click that matches nothing has to come back with something to aim at.
+const missed = JSON.parse((await call('tools/call', { name: 'readest_click', arguments: { window: 'main', selector: '#no-such-thing' } })).body);
+const missReport = JSON.parse(missed.result.content[0].text).results[0].report;
+check(
+  missed.result?.isError === true && Array.isArray(missReport?.candidates),
+  'readest_click lists candidates when nothing matches',
+  JSON.stringify(missReport).slice(0, 120),
+);
+
+// A press the shortcut layer does not claim reports `handled: false` rather than
+// pretending to have done something.
+const pressed = JSON.parse((await call('tools/call', { name: 'readest_press', arguments: { window: 'main', key: 'UnidentifiedKey' } })).body);
+const pressReport = JSON.parse(pressed.result.content[0].text).results[0].report;
+check(
+  pressReport?.ok === true && pressReport?.handled === false,
+  'readest_press reports an unclaimed key',
+  JSON.stringify(pressReport).slice(0, 120),
+);
 
 // until=ready resolves against the library window immediately, and reports the
 // document's boot so a caller can tell one document from the next.

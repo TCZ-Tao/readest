@@ -86,6 +86,9 @@ JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走
 | `readest_goto` | `{window, hash?, cfi?, page?}`，`window` 必填 | 多书窗口用 `hash` 选书；`cfi` 精确跳转；`page` 是 1-based 页码，**固定版式（PDF/CBZ）用 `section` 口径（页脚显示的那个页码），流式书用 `pageinfo` 口径** |
 | `readest_reload` | `{window?}` | 重载该窗口；省略 `window` 则重载所有窗口。走 app 自己的 `beforereload` 链，先保存再重载 |
 | `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同） |
+| `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
+| `readest_click` | `{window, selector}` 必填 | 聚焦后点击第一个匹配 CSS 选择器的元素，返回点了什么；没匹配到会连同窗口里可见的可交互元素一起返回，便于换一个选择器 |
+| `readest_press` | `{window, key, modifiers?}` 必填 | 在窗口里按一个键，走 app 自己的快捷键层；`handled` 说明是否有快捷键接管 |
 | `readest_screenshot` | `{window}` 必填 | 返回 MCP image content（PNG） |
 
 细节：
@@ -105,6 +108,9 @@ JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走
   ```
   `until:'ready'` 之所以能代表「新文档起来了」：Rust 会每秒重发动作直到有监听器应答，所以这条命令
   能在窗口内跑起来，本身就说明新文档已经挂上监听器。
+- **`click` 点得到什么、点不到什么**：只覆盖窗口自己的文档（`document.querySelector`）；书的内容在 iframe 自己的文档里，不在这条范围内，读书相关的操作请用 `goto`/`press`。命中后先 `focus` 再 `click`，和真实点击一致；这是合成事件（`isTrusted:false`），但 app 里没有任何地方检查 `isTrusted`（`grep isTrusted apps/readest-app/src` 为空），所以 React 的 onClick、`<summary>` 原生展开这类都照常响应；需要真实按下/抬起序列的交互（拖拽选择、画线）不覆盖。
+- **`press` 落在「真实按键会落到的地方」**：在 `document.activeElement ?? body` 上派发 keydown，所以事件路径、以及「输入框里不触发快捷键」的行为都和真人按键一致；`handled` 来自快捷键层（`useShortcuts`）调用 preventDefault。键名用 `KeyboardEvent.key`（`ArrowRight`、`Escape`、`b`…），修饰键只认 `ctrl`/`alt`/`shift`/`meta`——拼错会直接报错，而不是静默按成裸键。
+- **`close_window` 就是窗口的 ✕**：前端调用 `tauriHandleClose`，走 `onCloseRequested` 那条链（`handleCloseBooks` 保存进度 → 通知 `main` → 300ms 后 destroy），所以不丢阅读位置；正因为它真的关窗口，关掉最后一个窗口可能连带结束进程和这个服务。
 - **`goto` 只做「能定位」的事**：`cfi` 直接交给 `view.goTo`；`page` 复用页脚翻页输入的同一套代码
   （`getBookProgress` 的 `pageinfo`/`section` + `fractionForPage`/`clampPage`），固定版式下走
   `view.goTo(page - 1)`。目标窗口不是阅读路由、窗口里没有这本书、或这本书**加载失败**
@@ -181,7 +187,7 @@ cd apps/readest-app
 cargo test -p Readest --lib debug_server          # 协议层单测（tools/list、错误路径、Deferred 派发）
 pnpm fmt:check && pnpm clippy:check                # Rust 格式与 lint
 npx tsc --noEmit                                   # 前端类型
-node scripts/mcp-parity.mjs <token>                # 起 app 后跑，24 项协议检查
+node scripts/mcp-parity.mjs <token>                # 起 app 后跑，30 项协议检查
 ```
 
 注意两个本机特性，别误判成自己的改动：
@@ -193,6 +199,7 @@ node scripts/mcp-parity.mjs <token>                # 起 app 后跑，24 项协�
 ## 9. 边界（明确不做的事）
 
 - 不做**破坏性操作**：文件导入/删除、书库修改、设置写入
+- `readest_click` / `readest_press` 是通用的 UI 驱动：delete、remove 这类入口（包括二次确认）也在可达范围内，工具不判断点的是什么，调用方自己负责。上一条限制约束的是工具自己主动做的事（比如没有「删书」工具），不是这条通道能碰到什么
 - 不做**多步编排**：一次调用只做一件事，串起来由 AI 自己决定
 - **Android 不支持**：该 fork 的另一目标平台没有桌面窗口模型，本期不覆盖
 - iOS / macOS / Linux 不在本 fork 范围（截图在非 Windows 上直接返回不支持）
