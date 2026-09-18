@@ -15,7 +15,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import type { TOCItem } from '@/libs/document';
+import type { SearchExcerpt } from '@/types/book';
 import envConfig, { isTauriAppPlatform } from '@/services/environment';
+import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
 import { getBookProgress, useReaderProgressStore } from '@/store/readerProgressStore';
 import { useLibraryStore } from '@/store/libraryStore';
@@ -102,18 +105,21 @@ const buildSnapshot = () => {
   const { bookKeys } = useReaderStore.getState();
   const { progresses } = useReaderProgressStore.getState();
   const { library, getBookByHash } = useLibraryStore.getState();
+  const { getBookData } = useBookDataStore.getState();
   const books = bookKeys.map((key) => {
     const hash = key.split('-')[0]!;
     const progress = progresses[key] ?? null;
+    // The page number the footer shows, which is also what `readest_goto`'s
+    // `page` means: fixed-layout books count the book's own pages (`section`),
+    // reflowable ones `pageinfo`. Same choice setProgress makes (readerStore).
+    const pageInfo = getBookData(key)?.isFixedLayout ? progress?.section : progress?.pageinfo;
     return {
       hash,
       title: getBookByHash(hash)?.title ?? null,
       fraction: progress?.fraction ?? null,
       location: progress?.location ?? null,
       section: progress?.sectionLabel ?? null,
-      page: progress?.pageinfo
-        ? `${progress.pageinfo.current + 1}/${progress.pageinfo.total}`
-        : null,
+      page: pageInfo ? `${pageInfo.current + 1}/${pageInfo.total}` : null,
     };
   });
   return {
@@ -183,7 +189,17 @@ export const initDebugReporting = async () => {
 // ── Actions (Rust → this window) ────────────────────────────────────────────
 
 interface DebugAction {
-  kind: 'open-book' | 'goto' | 'reload' | 'wait' | 'close' | 'click' | 'press';
+  kind:
+    | 'open-book'
+    | 'goto'
+    | 'reload'
+    | 'wait'
+    | 'close'
+    | 'click'
+    | 'press'
+    | 'settings'
+    | 'toc'
+    | 'search';
   hashes?: string[];
   hash?: string;
   cfi?: string;
@@ -195,6 +211,8 @@ interface DebugAction {
   selector?: string;
   key?: string;
   modifiers?: string[];
+  query?: string;
+  limit?: number;
 }
 
 /// An action's report, plus work that must not start until Rust has it: a
@@ -292,6 +310,49 @@ const interactiveElements = () =>
     .slice(0, 25)
     .map(describeElement);
 
+/// Entries a `readest_toc` reply may carry across all nesting levels. Some books
+/// have thousands and every one of them is paid for by the caller's context.
+const MAX_TOC_ITEMS = 300;
+
+interface TocEntry {
+  label: string;
+  href: string;
+  cfi?: string;
+  /// 1-based page number, fixed-layout books only: their TOC items carry the
+  /// page index (`TOCItem.index` is documented for PDF). Reflowable books have
+  /// no page identity to attach, so the field is absent there.
+  page?: number;
+  subitems?: TocEntry[];
+}
+
+/// Depth-first copy of the TOC, keeping only what a caller can act on, and
+/// stopping once `budget` is spent (`dropped` then says so).
+const tocEntries = (
+  items: TOCItem[],
+  isFixedLayout: boolean,
+  budget: { left: number; dropped: boolean },
+): TocEntry[] => {
+  const entries: TocEntry[] = [];
+  for (const item of items) {
+    if (budget.left <= 0) {
+      budget.dropped = true;
+      break;
+    }
+    budget.left -= 1;
+    entries.push({
+      label: item.label,
+      href: item.href,
+      cfi: item.cfi,
+      // A fixed-layout item only has a page when the book's own outline pointed
+      // at one (pdf.js leaves `index` undefined for a destination it could not
+      // resolve), so do not turn that into a `null` page.
+      page: isFixedLayout && typeof item.index === 'number' ? item.index + 1 : undefined,
+      subitems: item.subitems ? tocEntries(item.subitems, isFixedLayout, budget) : undefined,
+    });
+  }
+  return entries;
+};
+
 const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
   const fail = (error: string, extra?: Record<string, unknown>): ActionOutcome => ({
     result: { ok: false, error, ...extra },
@@ -365,6 +426,72 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       // (`handleCloseBooks` in ReaderContent); a bare Tauri close skips that.
       // Report first — closing takes the JS context with it.
       return { result: { ok: true, closing: true }, after: () => void tauriHandleClose() };
+    }
+    case 'settings': {
+      // The settings the reader is actually rendering with: `getViewSettings`
+      // is the global defaults merged with the book's own overrides, built by
+      // readerStore when the book opens. Nothing here comes from
+      // `SystemSettings`, which holds credentials.
+      const { bookKeys, getViewSettings } = useReaderStore.getState();
+      return {
+        result: {
+          ok: true,
+          window: getCurrentWindow().label,
+          global: useSettingsStore.getState().settings.globalViewSettings ?? null,
+          books: bookKeys.map((key) => ({
+            hash: key.split('-')[0],
+            settings: getViewSettings(key),
+          })),
+        },
+      };
+    }
+    case 'toc': {
+      const key = await waitForBookKey(action.hash);
+      await waitForView(key);
+      // bookDoc.toc is the nav the reader itself navigates by: each item's cfi
+      // is baked there (hydrateBookNav), and href is what the sidebar passes on.
+      const bookData = useBookDataStore.getState().getBookData(key);
+      const budget = { left: MAX_TOC_ITEMS, dropped: false };
+      const entries = tocEntries(bookData?.bookDoc?.toc ?? [], !!bookData?.isFixedLayout, budget);
+      return { result: { ok: true, book: key, entries, truncated: budget.dropped } };
+    }
+    case 'search': {
+      const key = await waitForBookKey(action.hash);
+      const view = await waitForView(key);
+      const limit = action.limit ?? 20;
+      const matches: { cfi: string; chapter: string; excerpt: SearchExcerpt }[] = [];
+      try {
+        // Book scope over the live DOM: no index, no worker, but each match
+        // comes back as a CFI already (`#toSearchMatch`), which is the point.
+        for await (const item of view.search({
+          scope: 'book',
+          mode: 'contains',
+          matchCase: false,
+          matchDiacritics: false,
+          query: action.query!,
+        })) {
+          // The only string this generator yields is 'done'.
+          if (typeof item === 'string') break;
+          for (const match of item.subitems ?? []) {
+            if (matches.length >= limit) break;
+            matches.push({ cfi: match.cfi, chapter: item.label, excerpt: match.excerpt });
+          }
+          if (matches.length >= limit) break;
+        }
+      } finally {
+        // `view.search` paints its matches into the book as highlights. A read
+        // must leave the window as it found it — the CFIs survive the clear.
+        view.clearSearch();
+      }
+      return {
+        result: {
+          ok: true,
+          book: key,
+          query: action.query,
+          matches,
+          truncated: matches.length >= limit,
+        },
+      };
     }
     case 'click': {
       const element = document.querySelector<HTMLElement>(action.selector!);

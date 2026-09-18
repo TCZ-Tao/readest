@@ -82,7 +82,10 @@ check(
       'readest_press',
       'readest_reload',
       'readest_screenshot',
+      'readest_search',
+      'readest_settings',
       'readest_state',
+      'readest_toc',
       'readest_wait',
     ].join(','),
   'tools/list',
@@ -136,6 +139,13 @@ for (const [name, args, why] of [
   ['readest_click', { window: 'main' }, 'missing selector'],
   ['readest_press', { window: 'main' }, 'missing key'],
   ['readest_press', { window: 'main', key: 'b', modifiers: ['ctl'] }, 'unknown modifier'],
+  ['readest_toc', {}, 'missing window'],
+  ['readest_search', { window: 'main' }, 'missing query'],
+  ['readest_settings', { window: 'no-such-window' }, 'unknown window'],
+  // `main` is the library window: not a reader route, so the frontend rejects it
+  // immediately instead of spending the readiness budget.
+  ['readest_toc', { window: 'main' }, 'not a reader route'],
+  ['readest_search', { window: 'main', query: 'zzz' }, 'not a reader route'],
 ]) {
   const call_ = JSON.parse((await call('tools/call', { name, arguments: args })).body);
   check(call_.result?.isError === true, `${name} rejects ${why}`, JSON.stringify(call_.result).slice(0, 120));
@@ -183,6 +193,52 @@ if (window) {
   );
 } else {
   console.log('skip readest_screenshot: no window open');
+}
+
+// TOC / search / settings read the window itself, so they need a book open in it:
+// otherwise they are the not-a-reader-route rejections checked above.
+const report = async (name, args) =>
+  JSON.parse(
+    JSON.parse((await call('tools/call', { name, arguments: args })).body).result.content[0]
+      .text,
+  ).results[0].report;
+const readers = (state.windows ?? [])
+  .filter((entry) => entry.snapshot?.books?.length)
+  .map((entry) => entry.label);
+const tocs = [];
+for (const label of readers) tocs.push({ label, report: await report('readest_toc', { window: label }) });
+check(
+  tocs.length > 0 && tocs.every((entry) => entry.report?.ok === true && Array.isArray(entry.report.entries)),
+  'readest_toc answers for every reader window',
+  tocs.map((entry) => `${entry.label}: ${entry.report?.entries?.length ?? 'error'} entries`).join('; ') ||
+    'no reader window with an open book',
+);
+// A book without a document outline (some PDFs) legitimately answers with none,
+// so take the deepest TOC any open book has, and its own chapter name as the
+// search query — otherwise a zero-match reply would be a real failure.
+const outlined = tocs.find((entry) => entry.report?.entries?.length) ?? tocs[0];
+const reader = outlined?.label;
+const query = /[A-Za-z]{4,}/.exec(outlined?.report?.entries?.[0]?.label ?? '')?.[0];
+if (reader && query) {
+  const found = await report('readest_search', { window: reader, query, limit: 5 });
+  check(
+    found?.ok === true && (found.matches?.length ?? 0) > 0 && !!found.matches[0]?.cfi,
+    `readest_search ${reader} for "${query}" returns CFIs`,
+    `${found?.matches?.length ?? 0} matches${found?.matches?.[0]?.cfi ? `, first ${found.matches[0].cfi}` : ''}`,
+  );
+} else {
+  console.log('skip readest_search: no open book has a chapter label to search for');
+}
+if (reader) {
+  const settings = await report('readest_settings', { window: reader });
+  const view = settings?.books?.[0]?.settings;
+  check(
+    settings?.ok === true && typeof view?.theme === 'string' && !!settings.global?.theme,
+    `readest_settings ${reader} reports the effective view settings`,
+    JSON.stringify({ theme: view?.theme, isEink: view?.isEink, fontSize: view?.defaultFontSize }),
+  );
+} else {
+  console.log('skip readest_settings: no reader window with an open book');
 }
 
 // unknown method and unknown tool are JSON-RPC errors, not crashes

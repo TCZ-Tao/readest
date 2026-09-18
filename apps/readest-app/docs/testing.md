@@ -272,7 +272,17 @@ per-client registration script:
 The state tools are `readest_state`, `readest_logs {n, since?, window?, level?,
 grep?}` (the filters AND together; `level` is a minimum severity, `grep` a
 case-insensitive substring), and `readest_events {since}` — the same three
-payloads as the JSON endpoints.
+payloads as the JSON endpoints. Three more readers answer from the window rather
+than from Rust, so they ride the action channel below without changing anything:
+`readest_settings {window}` (the effective view settings: the global defaults plus
+each open book's merged overrides — deliberately only `ViewSettings`, never
+`SystemSettings`, which holds credentials), `readest_toc {window, hash?}` (the
+parsed TOC: `label`/`href`/`cfi` per entry, plus the 1-based `page` on
+fixed-layout books, truncated at 300 entries) and `readest_search {window, hash?,
+query, limit?}` (literal case-insensitive matches over the live book DOM, each with
+its CFI and an excerpt — no search index, so a long book takes seconds and Rust
+allows 30s; it clears the previous search highlights the way the in-app search
+does, and its own before returning).
 
 ### Action tools
 
@@ -286,6 +296,9 @@ payloads as the JSON endpoints.
 | `readest_click {window, selector}` | Focus and click the first element matching a CSS selector, and report what was clicked. Nothing matching comes back with the window's visible interactive elements to pick a selector from. Only the window's own document — book content lives in its own document, so use `readest_goto`/`readest_press` for reading |
 | `readest_press {window, key, modifiers?}` | Press one key through the app's own shortcut layer (`useShortcuts`, the same one real key presses reach). `handled` says whether a shortcut claimed it. Modifiers are `ctrl`/`alt`/`shift`/`meta`; a misspelt one is rejected rather than silently dropping to the bare key |
 | `readest_screenshot {window}` | PNG of the window's rendered content, as MCP image content      |
+| `readest_settings {window}`   | Read-only: the view settings actually in effect (global defaults + each open book's merged overrides) |
+| `readest_toc {window, hash?}` | Read-only: the parsed TOC with `label`/`href`/`cfi` (and `page` on fixed-layout books), both of which `readest_goto` accepts |
+| `readest_search {window, hash?, query, limit?}` | Read-only: literal, case-insensitive text search over the open book, returning each match's CFI and excerpt |
 
 Rust sends each action to the named webview as a `debug://action` event
 (served by `src/services/debugReport.ts`), the window runs it and reports back
@@ -328,8 +341,11 @@ area. On other platforms the tool reports that it is unsupported.
 
 Verified against the official SDK client (`pnpm exec node scripts/mcp-parity.mjs
 <token>` while the app runs with the server on): initialize/tools-list/three
-state tool calls, the action tools' argument errors, one PNG screenshot, plus a
-wrong-token rejection. The action tools themselves were driven live once:
+state tool calls, the action tools' argument errors (including the three readers'
+parameter and non-reader-route rejections), one PNG screenshot, plus a
+wrong-token rejection; with a book open it also reads that book's TOC, searches
+its first chapter's label, and reads the window's effective settings. The mutating
+action tools were driven live once:
 `readest_open_book` added exactly one reader window, `readest_goto` moved the
 view (fraction and CFI both changed), `readest_reload` changed the window's
 `boot`, and a one-line style edit plus reload produced a different screenshot

@@ -3,12 +3,16 @@
 //! /events) and an MCP Streamable HTTP endpoint at /mcp, so any MCP client can
 //! attach with just a URL and a bearer token — no per-client stdio wrapper.
 //!
-//! The tools are read-only state readers plus a small set of *actions* (open a
-//! book, jump to a location, reload a window, screenshot it) so an AI can close
-//! the edit → reload → look loop itself. Actions reach the webviews over a Tauri
-//! event and report back through `debug_action_result`; screenshots are taken by
-//! the platform webview (see `capture_png`). All of it is deliberately limited
-//! to operations that lose nothing: no file, setting, or library mutation.
+//! The tools are read-only state readers owned by this process, a set of
+//! *actions* (open a book, jump to a location, reload a window, screenshot it,
+//! click, press a key, close a window, wait for readiness), and the readers whose
+//! answers only the window has (its TOC, a text search, the view settings in
+//! effect) — together enough for an AI to close the edit → reload → look loop
+//! itself. The window-bound ones reach a webview over a Tauri event and report
+//! back through `debug_action_result`; screenshots are taken by the platform
+//! webview (see `capture_png`). All of it is deliberately limited to operations
+//! that lose nothing: no file, setting, or library mutation, and nothing that
+//! carries a credential.
 //!
 //! Compiled into desktop debug builds only (`debug_assertions`), never into
 //! release, and off until the user flips Developer → "MCP Debug Server" in
@@ -57,6 +61,14 @@ const WAIT_MAX_MS: u64 = 60_000;
 const WAIT_MARGIN_MS: u64 = 1_000;
 const WAIT_SLACK_MS: u64 = 5_000;
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+/// `readest_search` walks the live book DOM section by section — no search index,
+/// so a long book takes seconds where the in-app search UI (an indexed worker)
+/// would take one. It stops at the caller's `limit`, and a caller who asked for
+/// something the book does not contain pays for the walk; hence the longer
+/// dispatch deadline, in the same spirit as `readest_wait`.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+const SEARCH_DEFAULT_LIMIT: u64 = 20;
+const SEARCH_MAX_LIMIT: u64 = 100;
 /// Protocol revisions this server speaks, newest first. `initialize` echoes the
 /// client's own revision when it is supported, else offers the newest.
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -900,7 +912,47 @@ fn tool_catalog() -> Value {
                     "window": {"type": "string", "description": "Reader window label from readest_state."},
                     "hash": {"type": "string", "description": "Which book to move, when the window has several open (default: the first one)."},
                     "cfi": {"type": "string", "description": "Target CFI, href, or landmark."},
-                    "page": {"type": "integer", "minimum": 1, "description": "Target page number, 1-based: use `section` for fixed-layout books (the number the footer shows) and `pageinfo` for reflowable ones."}
+                    "page": {"type": "integer", "minimum": 1, "description": "Target page number, 1-based, in the same numbering readest_state reports for that book (the number the footer shows). On a reflowable book that numbering is section-local, so pass `cfi` when the exact spot matters."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_toc",
+            "description": "The open book's table of contents, nested: label, href and CFI per entry, so an entry can be handed straight to readest_goto. Fixed-layout books additionally carry `page`, the footer's page number. Truncated at 300 entries (`truncated: true`).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Reader window label from readest_state."},
+                    "hash": {"type": "string", "description": "Which book to read the TOC of, when the window has several open (default: the first one)."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_search",
+            "description": "Search the open book's text and return each match's CFI with a short excerpt, so a passage can be found by content and then reached with readest_goto (`matches[].cfi`). Scans the live book without a search index, so a long book can take seconds; `limit` stops it once enough matches are found, and the search highlights are cleared again before returning.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Reader window label from readest_state."},
+                    "hash": {"type": "string", "description": "Which book to search, when the window has several open (default: the first one)."},
+                    "query": {"type": "string", "minLength": 1, "description": "Text to look for (literal substring, case-insensitive)."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Stop after this many matches (default 20)."}
+                },
+                "required": ["window", "query"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_settings",
+            "description": "The reading settings currently in effect in one window: the global defaults, plus the merged per-book view settings each open book is being rendered with (theme, e-ink, font size, line height, margins, layout/scroll mode, page-turn style). Read it when the rendered result needs explaining. Deliberately only view settings: app-wide settings, and everything holding a credential, are not reachable here.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."}
                 },
                 "required": ["window"],
                 "additionalProperties": false
@@ -1058,6 +1110,73 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "cfi": cfi,
                     "page": page,
                 }),
+                timeout: ACTION_TIMEOUT,
+            }))
+        }
+        // The two "find a location" readers: read-only, but the answers live in
+        // the window (the parsed book's TOC, the live DOM), so they ride the same
+        // dispatch channel as the actions.
+        "readest_toc" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({"kind": "toc", "hash": args.get("hash")}),
+                timeout: ACTION_TIMEOUT,
+            }))
+        }
+        "readest_search" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            let Some(query) = args
+                .get("query")
+                .and_then(Value::as_str)
+                .filter(|query| !query.is_empty())
+            else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "query is required: pass the text to look for",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(SEARCH_DEFAULT_LIMIT)
+                .clamp(1, SEARCH_MAX_LIMIT);
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({
+                    "kind": "search",
+                    "hash": args.get("hash"),
+                    "query": query,
+                    "limit": limit,
+                }),
+                timeout: SEARCH_TIMEOUT,
+            }))
+        }
+        "readest_settings" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({"kind": "settings"}),
                 timeout: ACTION_TIMEOUT,
             }))
         }
@@ -1551,6 +1670,9 @@ mod tests {
                 "readest_events",
                 "readest_open_book",
                 "readest_goto",
+                "readest_toc",
+                "readest_search",
+                "readest_settings",
                 "readest_reload",
                 "readest_wait",
                 "readest_close_window",

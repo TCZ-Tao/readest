@@ -1,7 +1,8 @@
 # 调试 MCP：让 AI 看得到、也操作得了正在运行的 Readest
 
 面向本 fork 自用的一条调试通道：把运行中的 app（窗口、阅读位置、console、窗口事件）暴露成
-JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走完「改代码 → reload → 截图 → 看结果」的
+JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、跳转、重载、截图、点击、按键、关窗、等就绪、
+读目录、搜正文、读设置），让 AI 能自己走完「改代码 → reload → 截图 → 看结果」的
 循环，不用每步都找人工确认。
 
 **只在桌面 debug 构建里存在**：`debug_server` 模块由 `debug_assertions + desktop` 门控，release
@@ -50,6 +51,24 @@ JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走
 | `readest_state` | 无 | `{windows:[...]}`，见下表 |
 | `readest_logs` | `{n}` 默认 200，另可选 `since` / `window` / `level` / `grep` | `{entries:[{label, level, text, ts}], matched, total}` |
 | `readest_events` | `{since}` 默认 0 | `{events:[{id, event, label, ts}]}` |
+| `readest_settings` | `{window}` 必填 | `{global, books:[{hash, settings}]}`：该窗口**当前生效**的阅读设置 |
+| `readest_toc` | `{window, hash?}`，`window` 必填 | `{book, entries:[{label, href, cfi, page?, subitems?}], truncated}` |
+| `readest_search` | `{window, hash?, query, limit?}`，`window`/`query` 必填 | `{book, query, matches:[{cfi, chapter, excerpt}], truncated}` |
+
+后三个也是**只读**的，但答案在窗口里（解析好的目录、活的 DOM、合并后的设置），所以和动作工具走同一条
+通道（§6）：Rust 派发到指定窗口，窗口回报。
+
+- **`readest_settings` 是「为什么长这样」的答案**：`global` 是 `settings.globalViewSettings`，
+  `books[].settings` 是每本已开书 `getViewSettings(key)` 的结果——全局默认 + 本书覆盖，也就是渲染时
+  真正用的那一份（主题、e-ink、字号、行高、边距、滚动/分栏、翻页动画…）。它**只给视图设置**：
+  `SystemSettings` 不在其中，因为那里面有 KOSync/Readwise/S3 的凭据和 PIN 哈希。
+- **`readest_toc` 的 `cfi` 是目录项自己烘好的**（`hydrateBookNav` → `bakeLocationsAndCfis`），`href` 是
+  侧栏点击用的那个，两者都能直接喂给 `readest_goto`。固定版式（PDF）多一个 `page`，就是页脚那个页码。
+  超过 300 项会截断并置 `truncated`。
+- **`readest_search` 直读活 DOM，不走索引**：`view.search` 逐节解析并匹配，所以长书可能要几秒到几十秒
+  ——`limit`（默认 20、上限 100）一凑够就停，Rust 给这条派发的 deadline 是 30 秒（其余动作 10 秒）。
+  每条命中都带现成的 CFI（foliate 在匹配时就 `getCFI` 了），拿去 `readest_goto` 即可。代价是它会像
+  UI 里发起搜索那样**先清掉上一次的搜索高亮**；自己加的高亮在返回前也清掉了。
 
 `readest_logs` 的四个过滤项都可选、**与关系**，用来切掉跨窗口噪音（HMR 的 `[Fast Refresh] done in 148ms`、
 别人窗口的日志）：
@@ -70,7 +89,7 @@ JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走
 | --- | --- |
 | `label` / `title` / `url` | 窗口身份（`main` 是库窗口，`reader-0-*` 是阅读窗口） |
 | `path` | 当前路由（如 `/reader?ids=<hash>`） |
-| `books[]` | 本窗口打开的书：`hash`、`title`、`fraction`、`location`(CFI)、`section`、`page` |
+| `books[]` | 本窗口打开的书：`hash`、`title`、`fraction`、`location`(CFI)、`section`（章节标题）、`page`（**页脚显示的那个页码**：固定版式按书的页数算、流式按分节页码算，与 `readest_goto` 的 `page` 完全同一口径） |
 | `library[]` | 书库的 `{hash, title}` 列表——**`readest_open_book` 要的就是这里的 hash** |
 | `boot` | `performance.timeOrigin`：本次文档加载的时刻，用来判断某个窗口是否真的 reload 过 |
 | `ts` | 快照时间 |
@@ -83,7 +102,7 @@ JSON 接口和 MCP 工具，并且提供 4 个动作工具，让 AI 能自己走
 | 工具 | 参数 | 语义 |
 | --- | --- | --- |
 | `readest_open_book` | `{hashes:[...]}` 必填 | 单本书且已在某个 reader 窗口打开 → 聚焦那个窗口；否则开一个新 reader 窗口。**等到窗口真的出现才返回**，并在 `window` 里给出它的 label（`focused` 时窗口本来就在 `/state` 里） |
-| `readest_goto` | `{window, hash?, cfi?, page?}`，`window` 必填 | 多书窗口用 `hash` 选书；`cfi` 精确跳转；`page` 是 1-based 页码，**固定版式（PDF/CBZ）用 `section` 口径（页脚显示的那个页码），流式书用 `pageinfo` 口径** |
+| `readest_goto` | `{window, hash?, cfi?, page?}`，`window` 必填 | 多书窗口用 `hash` 选书；`cfi` 精确跳转（`readest_toc` / `readest_search` 给的 `cfi`/`href` 直接可用）；`page` 是 1-based 页码，**与 `readest_state` 里 `page` 同一口径**（流式书的页码是分节内的，要精确位置仍用 `cfi`） |
 | `readest_reload` | `{window?}` | 重载该窗口；省略 `window` 则重载所有窗口。走 app 自己的 `beforereload` 链，先保存再重载 |
 | `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同） |
 | `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
@@ -173,7 +192,10 @@ lockfile 里已有，不额外引入新依赖）。
 ## 7. 加一个动作工具要动哪里
 
 1. `src-tauri/src/debug_server.rs` → `tool_catalog()` 加 schema（含 `inputSchema`）
-2. 同文件 → `tool_outcome()` 分派；同步校验用 `Plan::Error`，需要前端执行用 `Plan::Action`/`Deferred`
+2. 同文件 → `tool_outcome()` 分派：同步就能答的校验直接
+   `ToolOutcome::Ready(error_result(..))`；要窗口执行或窗口才知道答案的用
+   `ToolOutcome::Deferred(Plan::Frontend { labels, action, timeout })`（`readest_wait` /
+   `readest_search` 这类自带预算的要把 `timeout` 一起给）；截图是唯一的 `Plan::Screenshot`
 3. `src/services/debugReport.ts` → `DebugAction` 联合类型加分支，在 `runDebugAction` 里实现
 4. 若新增 IPC 命令（例如「窗口自己上报结果」之外的交互）：`src-tauri/src/lib.rs` 的
    `invoke_handler`、`src-tauri/build.rs` 的 commands 列表、`src-tauri/capabilities/default.json`
@@ -187,7 +209,7 @@ cd apps/readest-app
 cargo test -p Readest --lib debug_server          # 协议层单测（tools/list、错误路径、Deferred 派发）
 pnpm fmt:check && pnpm clippy:check                # Rust 格式与 lint
 npx tsc --noEmit                                   # 前端类型
-node scripts/mcp-parity.mjs <token>                # 起 app 后跑，30 项协议检查
+node scripts/mcp-parity.mjs <token>                # 起 app 后跑，38 项协议检查（没开书时跳过 3 项 = 35）
 ```
 
 注意两个本机特性，别误判成自己的改动：
@@ -199,6 +221,10 @@ node scripts/mcp-parity.mjs <token>                # 起 app 后跑，30 项协�
 ## 9. 边界（明确不做的事）
 
 - 不做**破坏性操作**：文件导入/删除、书库修改、设置写入
+- `readest_settings` 只返回**视图设置**（主题/字号/布局…），不含 `SystemSettings`：那里面有同步凭据与
+  PIN 哈希，调试通道不把这些吐给客户端
+- `readest_search` 复用 `view.search`，因此和 UI 里发起搜索一样会先清掉上一次的搜索高亮（它自己加的
+  高亮在返回前清掉，CFI 不受影响）
 - `readest_click` / `readest_press` 是通用的 UI 驱动：delete、remove 这类入口（包括二次确认）也在可达范围内，工具不判断点的是什么，调用方自己负责。上一条限制约束的是工具自己主动做的事（比如没有「删书」工具），不是这条通道能碰到什么
 - 不做**多步编排**：一次调用只做一件事，串起来由 AI 自己决定
 - **Android 不支持**：该 fork 的另一目标平台没有桌面窗口模型，本期不覆盖
@@ -215,7 +241,8 @@ node scripts/mcp-parity.mjs <token>                # 起 app 后跑，30 项协�
 | 某动作 10 秒超时 | 目标窗口没响应：窗口已销毁、前端抛错、或页面加载失败。事件每秒重发一次，所以刚创建/刚重载的窗口不会因此丢动作 |
 | `timed out after 8000ms waiting for ...` | 前端等 `goto`/`open_book` 的封顶时间还不就绪：书一直没加载完（可能加载失败），或窗口始终没出现。等更久请先 `readest_wait {timeout_ms}` |
 | `timed out after <你的 timeout_ms>ms waiting for ...` | `readest_wait` 自己到点了；`timeout_ms` 越大等得越久（上限 60000） |
-| `book <hash> is not open in this window` / `... is not a reader route` | 目标窗口确实不是阅读窗口（比如 `main`），或没开这本书（多书窗口请带 `hash`）——立刻返回，不是「还没好」 |
+| `readest_search` 30 秒超时 | 书大而命中少：它逐节扫活的 DOM、没有索引，只在凑满 `limit` 时提前停。换更可能出现在正文里的词，或先用 `readest_toc` 把范围缩到某一章再按 `cfi` 跳过去 |
+| `book <hash> is not open in this window` / `... is not a reader route` | 目标窗口确实不是阅读窗口（比如 `main`），或没开这本书（多书窗口请带 `hash`）——立刻返回，不是「还没好」。`readest_toc` / `readest_search` / `readest_settings` 有同样的报错 |
 | `book ... failed to load` | 这本书加载失败（`viewState.error`），与 app 自己的就绪判据一致，不会白等 8 秒 |
 | 一个动作在多个窗口各执行一次 | 监听器被重复注册或没做窗口限定，见 §6 |
 | 截图报 unsupported | 非 Windows 平台 |
