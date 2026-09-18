@@ -216,7 +216,7 @@ interface DebugAction {
   hash?: string;
   cfi?: string;
   page?: number;
-  until?: 'ready' | 'book-loaded';
+  until?: 'ready' | 'library-ready' | 'book-loaded' | 'book-rendered';
   /// The frontend's own deadline for a `wait`, already reduced by the Rust
   /// side's WAIT_MARGIN_MS (the transport waits for the full budget).
   timeoutMs?: number;
@@ -485,12 +485,43 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       // document apart from the one it reloaded.
       const label = getCurrentWindow().label;
       const boot = Math.round(performance.timeOrigin);
-      if (action.until !== 'book-loaded') return { result: { ok: true, window: label, boot } };
+      if (action.until === 'library-ready') {
+        // `useLibrary()` flips this once the library list is loaded — what a
+        // post-reload screenshot of `main` actually needs (JS being up is not
+        // that: the shelf can still be an empty skeleton).
+        await waitFor(
+          () => (useLibraryStore.getState().libraryLoaded ? true : null),
+          'the library list to load in this window',
+          action.timeoutMs,
+        );
+        return {
+          result: {
+            ok: true,
+            window: label,
+            boot,
+            library: useLibraryStore.getState().library.length,
+          },
+        };
+      }
+      if (action.until !== 'book-loaded' && action.until !== 'book-rendered') {
+        return { result: { ok: true, window: label, boot } };
+      }
       // Same readiness `goto` waits for, so the two cannot disagree about what
       // "loaded" means — only the budget differs.
       const key = await waitForBookKey(action.hash, action.timeoutMs);
       await waitForView(key, action.timeoutMs);
-      return { result: { ok: true, window: label, book: key, loaded: true } };
+      if (action.until !== 'book-rendered') {
+        return { result: { ok: true, window: label, book: key, loaded: true } };
+      }
+      // The progress store is per-document and in-memory, and its first entry
+      // lands on the view's first relocate — a first page laid out. This is
+      // the piece `book-loaded` misses before a screenshot.
+      await waitFor(
+        () => (getBookProgress(key) ? true : null),
+        `book ${key.split('-')[0]} to render its first page`,
+        action.timeoutMs,
+      );
+      return { result: { ok: true, window: label, book: key, rendered: true } };
     }
     case 'close': {
       // The title-bar ✕ path, so the reading position is saved on the way out

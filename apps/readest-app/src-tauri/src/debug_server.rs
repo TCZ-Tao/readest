@@ -1004,13 +1004,13 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_wait",
-            "description": "Block until a window is usable, then return. `until: 'ready'` resolves as soon as the window's JS answers — after a `readest_reload` that means the fresh document is up. `until: 'book-loaded'` resolves when the book (the window's first, or `hash`) has finished loading, and fails immediately when the book cannot load or is not open there. Use it before a screenshot, or to give a slow book a budget longer than the actions' own 8s.",
+            "description": "Block until a window is usable, then return. `until: 'ready'` resolves as soon as the window's JS answers — after a `readest_reload` that means the fresh document is up, not that its data has arrived. `until: 'library-ready'` additionally waits for the library list to be loaded (the shelf a post-reload screenshot wants). `until: 'book-loaded'` resolves when the book (the window's first, or `hash`) has finished loading, and fails immediately when the book cannot load or is not open there; `until: 'book-rendered'` additionally waits for the first relocate — a first page actually laid out, the surest precondition for a reader screenshot. Use it before a screenshot, or to give a slow book a budget longer than the actions' own 8s.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "window": {"type": "string", "description": "Window label from readest_state."},
-                    "until": {"type": "string", "enum": ["ready", "book-loaded"], "description": "'ready': the window's JS is up and answering. 'book-loaded': its book has loaded."},
-                    "hash": {"type": "string", "description": "Which book to wait for with until='book-loaded' (default: the window's first)."},
+                    "until": {"type": "string", "enum": ["ready", "library-ready", "book-loaded", "book-rendered"], "description": "'ready': the window's JS is up and answering. 'library-ready': the library list is loaded. 'book-loaded': its book has loaded. 'book-rendered': loaded and a first page laid out."},
+                    "hash": {"type": "string", "description": "Which book to wait for with until='book-loaded'/'book-rendered' (default: the window's first)."},
                     "timeout_ms": {"type": "integer", "minimum": 2000, "maximum": 60000, "description": "Budget for the whole call (default 10000)."}
                 },
                 "required": ["window", "until"],
@@ -1264,9 +1264,12 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                 )));
             };
             let until = args.get("until").and_then(Value::as_str).unwrap_or("");
-            if !matches!(until, "ready" | "book-loaded") {
+            if !matches!(
+                until,
+                "ready" | "library-ready" | "book-loaded" | "book-rendered"
+            ) {
                 return Some(ToolOutcome::Ready(error_result(
-                    "until must be 'ready' (the window's JS is up and answering) or 'book-loaded'",
+                    "until must be 'ready', 'library-ready', 'book-loaded', or 'book-rendered'",
                 )));
             }
             if let Some(error) = check(label) {

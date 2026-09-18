@@ -107,7 +107,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_open_book` | `{hashes:[...]}` 必填 | 单本书且已在某个 reader 窗口打开 → 聚焦那个窗口；否则开一个新 reader 窗口。**等到窗口真的出现才返回**，并在 `window` 里给出它的 label（`focused` 时窗口本来就在 `/state` 里） |
 | `readest_goto` | `{window, hash?, cfi?, page?}`，`window` 必填 | 多书窗口用 `hash` 选书；`cfi` 精确跳转（`readest_toc` / `readest_search` 给的 `cfi`/`href` 直接可用）；`page` 是 1-based 页码，**与 `readest_state` 里 `page` 同一口径**（流式书的页码是分节内的，要精确位置仍用 `cfi`） |
 | `readest_reload` | `{window?}` | 重载该窗口；省略 `window` 则重载所有窗口。走 app 自己的 `beforereload` 链，先保存再重载 |
-| `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同） |
+| `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'library-ready'`：再等书库列表加载完（reload 后截图 `main` 用这档）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同）；`until:'book-rendered'`：再等第一次 relocate，即第一页确实排出来了，阅读窗截图前最稳的一档 |
 | `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
 | `readest_click` | `{window, selector?}` 或 `{window, x, y?}` | 聚焦后点击：`selector` 在窗口自己的 document 里找第一个匹配（找不到再找书内 iframe 的文档，能点到书里的脚注链接/段落），`x`/`y` 是该窗口**最近一次截图的像素坐标**（自动换算回 CSS 像素，书内 iframe 含缩放时会还原变换）。返回点了什么、在哪层文档找到的；选择器没匹配到会连同窗口里可见的可交互元素一起返回 |
 | `readest_press` | `{window, key, modifiers?}` 必填 | 在窗口里按一个键，走 app 自己的快捷键层；`handled` 说明是否有快捷键接管 |
@@ -125,7 +125,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
   动作可能几秒后才送达，这段投递延迟不该算进调用方的预算里）。三个典型用法：
   ```text
   慢书：      readest_wait {window, until:'book-loaded', timeout_ms: 60000} → readest_goto（此时不再等）
-  重载后截图： readest_reload {window} → readest_wait {window, until:'ready'} → readest_screenshot
+  重载后截图： readest_reload {window} → readest_wait {window, until:'library-ready' 或 'book-rendered'} → readest_screenshot
   只想等：     readest_wait {window, until:'book-loaded'}   # 拿回 book/loaded，不改变任何状态
   ```
   `until:'ready'` 之所以能代表「新文档起来了」：Rust 会每秒重发动作直到有监听器应答，所以这条命令
