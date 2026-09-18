@@ -108,7 +108,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
 | `readest_click` | `{window, selector}` 必填 | 聚焦后点击第一个匹配 CSS 选择器的元素，返回点了什么；没匹配到会连同窗口里可见的可交互元素一起返回，便于换一个选择器 |
 | `readest_press` | `{window, key, modifiers?}` 必填 | 在窗口里按一个键，走 app 自己的快捷键层；`handled` 说明是否有快捷键接管 |
-| `readest_screenshot` | `{window}` 必填 | 返回 MCP image content（PNG） |
+| `readest_screenshot` | `{window}` 必填；`wait_for_stable?` | 返回 MCP image content（PNG），另带一个 text part：`{sha256, bytes, width, height, cssWidth, cssHeight[, stable]}`。`wait_for_stable: true` 先等窗口 JS 应答、再连续拍到两帧完全相同才返回（约 8 秒封顶），适合 reload 后避免拍到半帧；reply 的 `stable` 说明是否真的稳定了下来 |
 
 细节：
 
@@ -140,6 +140,9 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 - **`screenshot` 仅 Windows**：走 WebView2 的 `ICoreWebView2::CapturePreview`（`with_webview` 拿
   控制器）。WebView2 用 DirectComposition 渲染，OS 级 `PrintWindow` 只会拍到空白客户区；因此这里是
   拍 web 内容本身，窗口被遮挡也能拍，但拍不到窗口边框/标题栏。其他平台返回明确的 unsupported 错误。
+  同一帧重复拍字节相同（同一渲染内容编码确定），所以 `sha256` 相等就是「界面没变」；
+  `width`/`height` 是 PNG 的像素尺寸，`cssWidth`/`cssHeight` 来自该窗口前端快照的 viewport，
+  两者之比就是坐标点击（`readest_click` 的 `x`/`y`）要的缩放，Rust 按窗口记住最近一次截图的这对值。
 - **超时**：Rust 派发动作后等前端回报，默认最多 10 秒（截图同理）；`readest_wait` 例外，用它自己的
   `timeout_ms`。窗口没响应会超时报错，而不是把整个工具调用挂住。
 

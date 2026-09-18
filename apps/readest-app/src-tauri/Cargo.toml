@@ -44,6 +44,8 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 semver = "1"
 base64 = "0.22"
+# Content hash for readest_screenshot: "did this frame change" in one call.
+sha2 = "0.10"
 psl = "2" # Validate response cookie domains before updating the browser session.
 minisign-verify = "0.2"
 log = "0.4"

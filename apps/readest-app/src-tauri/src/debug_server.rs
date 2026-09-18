@@ -61,6 +61,16 @@ const WAIT_MAX_MS: u64 = 60_000;
 const WAIT_MARGIN_MS: u64 = 1_000;
 const WAIT_SLACK_MS: u64 = 5_000;
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+/// `wait_for_stable` on a screenshot: after the window's JS answers (so the
+/// fresh document is up), keep capturing until two consecutive frames are
+/// byte-identical — the cheap stand-in for "the UI stopped changing", which
+/// nothing else in the app reports. Bounded so an animated window still
+/// returns a shot, flagged `stable: false`.
+const STABLE_BUDGET: Duration = Duration::from_secs(8);
+const STABLE_GAP: Duration = Duration::from_millis(400);
+/// A wait handed to the window before a stable capture, so a document that is
+/// still mounting does not compare equal to itself while blank.
+const STABLE_READY_TIMEOUT: Duration = Duration::from_secs(6);
 /// `readest_search` walks the live book DOM section by section — no search index,
 /// so a long book takes seconds where the in-app search UI (an indexed worker)
 /// would take one. It stops at the caller's `limit`, and a caller who asked for
@@ -558,7 +568,10 @@ async fn handle_mcp_post(
                 action,
                 timeout,
             } => run_frontend_action(app, &labels, &action, timeout).await,
-            Plan::Screenshot { label } => screenshot_result(app, &label).await,
+            Plan::Screenshot {
+                label,
+                wait_for_stable,
+            } => screenshot_result(app, &label, wait_for_stable).await,
         };
         reply = McpReply::json(rpc_ok(&deferred.id, result));
     }
@@ -600,6 +613,9 @@ enum Plan {
     },
     Screenshot {
         label: String,
+        /// Capture only after the frame has stopped changing (see
+        /// `STABLE_BUDGET`); adds `stable` to the reply.
+        wait_for_stable: bool,
     },
 }
 
@@ -1025,11 +1041,12 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_screenshot",
-            "description": "PNG screenshot of one window's rendered content, returned as MCP image content so it can be looked at directly. Works while the window is occluded. Windows only.",
+            "description": "PNG screenshot of one window's rendered content, returned as MCP image content so it can be looked at directly, with a text part carrying the frame's sha256, byte count and pixel/CSS size — so 'did the UI change' is one comparison of sha256 values, and the pixel sizes are what coordinate clicks (readest_click x/y) are measured in. Works while the window is occluded. Windows only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "window": {"type": "string", "description": "Window label from readest_state."}
+                    "window": {"type": "string", "description": "Window label from readest_state."},
+                    "wait_for_stable": {"type": "boolean", "description": "Wait for the frame to stop changing before returning (first for the window's JS to answer, then until two consecutive captures are identical, ~8s budget). Use after a reload so the shot is not a half-loaded frame; the reply reports `stable`."}
                 },
                 "required": ["window"],
                 "additionalProperties": false
@@ -1326,8 +1343,13 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
             if let Some(error) = check(label) {
                 return Some(error);
             }
+            let wait_for_stable = args
+                .get("wait_for_stable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             Some(ToolOutcome::Deferred(Plan::Screenshot {
                 label: label.to_string(),
+                wait_for_stable,
             }))
         }
         _ => None,
@@ -1465,19 +1487,104 @@ fn events_body(app: &AppHandle, since: u64) -> Value {
     json!({"events": matched, "last_id": last_id})
 }
 
-/// Screenshot as MCP image content, or the reason it could not be taken.
-async fn screenshot_result(app: &AppHandle, label: &str) -> Value {
+/// Screenshot as MCP image content, with the frame's hash and size alongside so
+/// "did the screen change" and "where does this pixel sit" are answerable from
+/// the reply instead of by diffing files by hand.
+async fn screenshot_result(app: &AppHandle, label: &str, wait_for_stable: bool) -> Value {
     let Some(window) = app.get_webview_window(label) else {
         return error_result(format!("no window labelled '{label}'"));
     };
-    match capture_png(&window).await {
-        Ok(png) => {
-            use base64::Engine;
-            let data = base64::engine::general_purpose::STANDARD.encode(png);
-            json!({"content": [{"type": "image", "data": data, "mimeType": "image/png"}]})
-        }
-        Err(e) => error_result(e),
+    if wait_for_stable {
+        // A document that is still mounting can compare equal to itself while
+        // blank, so first give the window its own readiness wait — the same
+        // action `readest_wait until:'ready'` runs. Best effort: a window that
+        // never answers still gets captured (and reported as unstable).
+        let _ = dispatch_action(
+            app,
+            label,
+            &json!({"kind": "wait", "until": "ready", "timeoutMs": STABLE_READY_TIMEOUT.as_millis() as u64 - 1_000}),
+            STABLE_READY_TIMEOUT,
+        )
+        .await;
     }
+    let mut png = match capture_png(&window).await {
+        Ok(png) => png,
+        Err(e) => return error_result(e),
+    };
+    let mut stable = false;
+    if wait_for_stable {
+        let deadline = std::time::Instant::now() + STABLE_BUDGET;
+        loop {
+            tokio::time::sleep(STABLE_GAP).await;
+            match capture_png(&window).await {
+                Ok(next) => {
+                    // WebView2 re-encodes the same frame deterministically, so
+                    // byte equality really is "nothing changed on screen".
+                    if next == png {
+                        stable = true;
+                        break;
+                    }
+                    png = next;
+                }
+                Err(e) => return error_result(e),
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+    let viewport = snapshot_viewport(app, label);
+    let dims = png_dimensions(&png);
+    use base64::Engine;
+    use sha2::Digest;
+    let mut meta = match dims {
+        Some((width, height)) => json!({"width": width, "height": height}),
+        None => json!({}),
+    };
+    if let Some((css_width, css_height)) = viewport {
+        meta["cssWidth"] = json!(css_width);
+        meta["cssHeight"] = json!(css_height);
+    }
+    if wait_for_stable {
+        meta["stable"] = json!(stable);
+    }
+    meta["bytes"] = json!(png.len());
+    meta["sha256"] = json!(format!("{:x}", sha2::Sha256::digest(&png)));
+    let data = base64::engine::general_purpose::STANDARD.encode(png);
+    json!({
+        "content": [
+            {"type": "image", "data": data, "mimeType": "image/png"},
+            {"type": "text", "text": meta.to_string()},
+        ]
+    })
+}
+
+/// The window's CSS viewport as its debug reporter last saw it.
+fn snapshot_viewport(app: &AppHandle, label: &str) -> Option<(f64, f64)> {
+    let snapshot = app
+        .state::<DebugState>()
+        .snapshots
+        .lock()
+        .unwrap()
+        .get(label)
+        .cloned()?;
+    let viewport = snapshot.get("viewport")?;
+    Some((
+        viewport.get("width")?.as_f64()?,
+        viewport.get("height")?.as_f64()?,
+    ))
+}
+
+/// PNG IHDR: the signature is 8 bytes, then a 4-byte length and the chunk name,
+/// then width and height as big-endian u32.
+fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    Some((
+        u32::from_be_bytes(png[16..20].try_into().ok()?),
+        u32::from_be_bytes(png[20..24].try_into().ok()?),
+    ))
 }
 
 /// WebView2 renders through DirectComposition, so OS-level window capture
@@ -1596,6 +1703,18 @@ mod tests {
 
     fn no_tools(_name: &str, _args: &Value) -> Option<ToolOutcome> {
         None
+    }
+
+    #[test]
+    fn png_dimensions_reads_the_ihdr() {
+        let mut png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&1280u32.to_be_bytes());
+        png.extend_from_slice(&720u32.to_be_bytes());
+        assert_eq!(png_dimensions(&png), Some((1280, 720)));
+        assert_eq!(png_dimensions(&png[..20]), None);
+        assert_eq!(png_dimensions(b"not a png at all....."), None);
     }
 
     #[test]

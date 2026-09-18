@@ -127,6 +127,13 @@ const buildSnapshot = () => {
     path: window.location.pathname + window.location.search,
     title: document.title,
     books,
+    // CSS viewport, the denominator when a screenshot's pixel size is turned
+    // into a scale for coordinate clicks (the Rust side keeps the pair).
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      dpr: window.devicePixelRatio,
+    },
     // Hashes for `readest_open_book` to name: without them the tool is only
     // usable for books that are already open somewhere.
     library: library.map(({ hash, title }) => ({ hash, title })),

@@ -180,7 +180,8 @@ check(
   JSON.stringify(ready).slice(0, 120),
 );
 
-// A screenshot of a live window is PNG image content, not text.
+// A screenshot of a live window is PNG image content plus a metadata text part
+// (sha256/bytes/size), not plain text.
 const state = JSON.parse(JSON.parse((await call('tools/call', { name: 'readest_state' })).body).result.content[0].text);
 const window = state.windows?.[0]?.label;
 if (window) {
@@ -190,6 +191,12 @@ if (window) {
     image?.type === 'image' && image.mimeType === 'image/png' && (image.data?.length ?? 0) > 1000,
     `readest_screenshot ${window} -> PNG image content`,
     image?.type === 'image' ? `${image.data.length} base64 chars` : JSON.stringify(shot.result).slice(0, 160),
+  );
+  const meta = shot.result?.content?.[1]?.type === 'text' ? JSON.parse(shot.result.content[1].text) : null;
+  check(
+    !!meta && typeof meta.sha256 === 'string' && meta.sha256.length === 64 && meta.bytes > 1000 && meta.width > 0,
+    `readest_screenshot ${window} -> frame metadata`,
+    JSON.stringify(meta).slice(0, 160),
   );
 } else {
   console.log('skip readest_screenshot: no window open');
