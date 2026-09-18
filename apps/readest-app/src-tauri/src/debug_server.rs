@@ -934,6 +934,18 @@ fn tool_catalog() -> Value {
             }
         },
         {
+            "name": "readest_focus",
+            "description": "Bring one window to the front — for a human to watch what the AI is doing, or right before handing the machine over to manual operation. A plain window-manager call: nothing inside the page changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
+        },
+        {
             "name": "readest_goto",
             "description": "Move a reader window's view to a location: a CFI (or an href/landmark) via `cfi`, or a 1-based page number via `page`. Rejects when the book has no page count yet.",
             "inputSchema": {
@@ -1413,6 +1425,32 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                 timeout: ACTION_TIMEOUT,
             }))
         }
+        // A pure window-manager call: no page involvement, so it answers right
+        // here instead of riding the dispatch channel.
+        "readest_focus" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            match app
+                .get_webview_window(label)
+                .map(|webview| webview.set_focus())
+            {
+                Some(Ok(())) => Some(ToolOutcome::Ready(text_result(
+                    json!({"ok": true, "focused": label}),
+                ))),
+                Some(Err(e)) => Some(ToolOutcome::Ready(error_result(format!(
+                    "cannot focus window '{label}': {e}"
+                )))),
+                None => Some(ToolOutcome::Ready(error_result(format!(
+                    "window '{label}' disappeared"
+                )))),
+            }
+        }
         "readest_screenshot" => {
             let Some(label) = window else {
                 return Some(ToolOutcome::Ready(error_result(
@@ -1878,6 +1916,7 @@ mod tests {
                 "readest_logs",
                 "readest_events",
                 "readest_open_book",
+                "readest_focus",
                 "readest_goto",
                 "readest_toc",
                 "readest_search",

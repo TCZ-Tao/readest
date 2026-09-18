@@ -111,6 +111,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_reload` | `{window?}` | 重载该窗口；省略 `window` 则重载所有窗口。走 app 自己的 `beforereload` 链，先保存再重载 |
 | `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'library-ready'`：再等书库列表加载完（reload 后截图 `main` 用这档）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同）；`until:'book-rendered'`：再等第一次 relocate，即第一页确实排出来了，阅读窗截图前最稳的一档 |
 | `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
+| `readest_focus` | `{window}` 必填 | 把窗口提到前台（纯窗口管理调用，页面无任何变化），供人工旁观或交接手动操作 |
 | `readest_click` | `{window, selector?}` 或 `{window, x, y?}` | 聚焦后点击：`selector` 在窗口自己的 document 里找第一个匹配（找不到再找书内 iframe 的文档，能点到书里的脚注链接/段落），`x`/`y` 是该窗口**最近一次截图的像素坐标**（自动换算回 CSS 像素，书内 iframe 含缩放时会还原变换）。返回点了什么、在哪层文档找到的；选择器没匹配到会连同窗口里可见的可交互元素一起返回 |
 | `readest_press` | `{window, key, modifiers?}` 必填 | 在窗口里按一个键，走 app 自己的快捷键层；`handled` 说明是否有快捷键接管 |
 | `readest_screenshot` | `{window}` 必填；`wait_for_stable?` | 返回 MCP image content（PNG），另带一个 text part：`{sha256, bytes, width, height, cssWidth, cssHeight[, stable]}`。`wait_for_stable: true` 先等窗口 JS 应答、再连续拍到两帧完全相同才返回（约 8 秒封顶），适合 reload 后避免拍到半帧；reply 的 `stable` 说明是否真的稳定了下来 |
@@ -224,7 +225,7 @@ cd apps/readest-app
 cargo test -p Readest --lib debug_server          # 协议层单测（tools/list、错误路径、Deferred 派发）
 pnpm fmt:check && pnpm clippy:check                # Rust 格式与 lint
 npx tsc --noEmit                                   # 前端类型
-node scripts/mcp-parity.mjs <token>                # 起 app 后跑，38 项协议检查（没开书时跳过 3 项 = 35）
+node scripts/mcp-parity.mjs <token>                # 起 app 后跑，42 项协议检查（没开书时跳过 4 项 = 38）
 ```
 
 注意两个本机特性，别误判成自己的改动：

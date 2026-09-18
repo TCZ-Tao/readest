@@ -76,6 +76,7 @@ check(
       'readest_click',
       'readest_close_window',
       'readest_events',
+      'readest_focus',
       'readest_goto',
       'readest_logs',
       'readest_open_book',
@@ -136,6 +137,8 @@ for (const [name, args, why] of [
   ['readest_wait', { window: 'main' }, "until missing"],
   ['readest_wait', { window: 'main', until: 'whenever' }, 'unknown until'],
   ['readest_close_window', {}, 'missing window'],
+  ['readest_focus', {}, 'missing window'],
+  ['readest_focus', { window: 'no-such-window' }, 'unknown window'],
   ['readest_click', { window: 'main' }, 'missing selector'],
   ['readest_press', { window: 'main' }, 'missing key'],
   ['readest_press', { window: 'main', key: 'b', modifiers: ['ctl'] }, 'unknown modifier'],
@@ -197,6 +200,13 @@ if (window) {
     !!meta && typeof meta.sha256 === 'string' && meta.sha256.length === 64 && meta.bytes > 1000 && meta.width > 0,
     `readest_screenshot ${window} -> frame metadata`,
     JSON.stringify(meta).slice(0, 160),
+  );
+  const focusCall = JSON.parse((await call('tools/call', { name: 'readest_focus', arguments: { window } })).body);
+  const focusReport = JSON.parse(focusCall.result.content[0].text);
+  check(
+    focusReport?.ok === true && focusReport?.focused === window,
+    `readest_focus ${window} reports the focused window`,
+    JSON.stringify(focusReport).slice(0, 120),
   );
 } else {
   console.log('skip readest_screenshot: no window open');
