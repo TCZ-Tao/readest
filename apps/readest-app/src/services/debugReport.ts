@@ -216,6 +216,10 @@ interface DebugAction {
   /// side's WAIT_MARGIN_MS (the transport waits for the full budget).
   timeoutMs?: number;
   selector?: string;
+  /// A click by pixel position: CSS coordinates relative to the window's
+  /// viewport, converted from the caller's screenshot pixels by the Rust side.
+  x?: number;
+  y?: number;
   key?: string;
   modifiers?: string[];
   query?: string;
@@ -293,11 +297,13 @@ const waitForView = (key: string, timeoutMs?: number) =>
     `book ${key.split('-')[0]} to finish loading in this window`,
     timeoutMs,
   );
-/// What was hit by a click, or what a failed click could have aimed at.
-const describeElement = (element: HTMLElement) => ({
-  tag: element.tagName.toLowerCase(),
+/// What was hit by a click, or what a failed click could have aimed at. Book
+/// documents hold plain (sometimes SVG) elements, so this reads by attribute
+/// instead of by `dataset`.
+const describeElement = (element: Element) => ({
+  tag: element.tagName?.toLowerCase(),
   text: element.textContent?.trim().slice(0, 60) || undefined,
-  testid: element.dataset['testid'],
+  testid: element.getAttribute('data-testid') ?? undefined,
   ariaLabel: element.getAttribute('aria-label') ?? undefined,
 });
 
@@ -316,6 +322,56 @@ const interactiveElements = () =>
     })
     .slice(0, 25)
     .map(describeElement);
+
+/// The book documents currently laid out in this window, one per displayed
+/// section (a paginated renderer keeps several). Each lives in its own iframe,
+/// so selectors and coordinates have to reach into them explicitly.
+const bookContents = (): { doc: Document; where: string }[] => {
+  const { bookKeys, getViewState } = useReaderStore.getState();
+  return bookKeys.flatMap((key) => {
+    const contents = getViewState(key)?.view?.renderer.getContents() ?? [];
+    return contents.map((content, position) => ({
+      doc: content.doc,
+      where:
+        bookKeys.length > 1
+          ? `book ${key.split('-')[0]} section ${content.index ?? position}`
+          : `book section ${content.index ?? position}`,
+    }));
+  });
+};
+
+/// A CSS selector search that also looks inside the book's own document(s) —
+/// how "click the footnote link" reaches content `readest_goto` can only name
+/// by location.
+const findBySelector = (selector: string): { element: Element; where: string } | null => {
+  const inWindow = document.querySelector(selector);
+  if (inWindow) return { element: inWindow, where: 'window' };
+  for (const { doc, where } of bookContents()) {
+    const found = doc.querySelector(selector);
+    if (found) return { element: found, where };
+  }
+  return null;
+};
+
+/// Resolves a viewport point to an element, book frames included. A frame whose
+/// renderer scales the iframe with a CSS transform (non-PDF fixed layout) needs
+/// the transform undone to get into the iframe's own coordinates; `zoom` set
+/// inside the book (body style) needs nothing — elementFromPoint there already
+/// works in the zoomed space.
+const elementAtPoint = (x: number, y: number): { element: Element; where: string } | null => {
+  for (const { doc, where } of bookContents()) {
+    const frame = doc.defaultView?.frameElement;
+    if (!(frame instanceof HTMLElement)) continue;
+    const rect = frame.getBoundingClientRect();
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) continue;
+    const transform = getComputedStyle(frame).transform;
+    const scale = transform && transform !== 'none' ? new DOMMatrixReadOnly(transform).a || 1 : 1;
+    const inner = doc.elementFromPoint((x - rect.left) / scale, (y - rect.top) / scale);
+    if (inner) return { element: inner, where };
+  }
+  const outer = document.elementFromPoint(x, y);
+  return outer ? { element: outer, where: 'window' } : null;
+};
 
 /// Entries a `readest_toc` reply may carry across all nesting levels. Some books
 /// have thousands and every one of them is paid for by the caller's context.
@@ -501,21 +557,35 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       };
     }
     case 'click': {
-      const element = document.querySelector<HTMLElement>(action.selector!);
-      if (!element) {
+      // Either a selector (window document first, then the book's own
+      // documents) or a viewport point (converted from screenshot pixels by
+      // the Rust side). Both land on one element; clicking it is the same.
+      const found =
+        typeof action.x === 'number' && typeof action.y === 'number'
+          ? elementAtPoint(action.x, action.y)
+          : action.selector
+            ? findBySelector(action.selector)
+            : null;
+      if (!found) {
+        if (typeof action.x === 'number' && typeof action.y === 'number') {
+          return fail(`nothing sits at (${action.x}, ${action.y}) in this window`);
+        }
         return fail(`nothing matches ${action.selector} in this window`, {
           candidates: interactiveElements(),
         });
       }
-      const rect = element.getBoundingClientRect();
+      const rect = found.element.getBoundingClientRect();
       // Focus first: a real click focuses what it hits, and the shortcut layer
       // reads `document.activeElement` to decide whether the user is typing.
-      element.focus({ preventScroll: true });
-      element.click();
+      if (found.element instanceof HTMLElement) {
+        found.element.focus({ preventScroll: true });
+      }
+      (found.element as HTMLElement).click();
       return {
         result: {
           ok: true,
-          clicked: describeElement(element),
+          clicked: describeElement(found.element),
+          where: found.where,
           rect: {
             x: Math.round(rect.x),
             y: Math.round(rect.y),

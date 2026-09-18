@@ -293,7 +293,7 @@ does, and its own before returning).
 | `readest_reload {window?}`    | Reload that window, or every window when `window` is omitted    |
 | `readest_wait {window, until, hash?, timeout_ms?}` | Block until the window is usable: `until: 'ready'` means its JS answers (after a reload, the fresh document; returns its `boot`), `until: 'book-loaded'` means the book has loaded — the same readiness `readest_goto` waits for, which is what lets a caller give a slow book a longer budget than the actions' own 8s |
 | `readest_close_window {window}` | Close that window through its own close path (the title-bar ✕: `tauriHandleClose`, which saves the reading position and tells the library window). Closing the last window can end the process |
-| `readest_click {window, selector}` | Focus and click the first element matching a CSS selector, and report what was clicked. Nothing matching comes back with the window's visible interactive elements to pick a selector from. Only the window's own document — book content lives in its own document, so use `readest_goto`/`readest_press` for reading |
+| `readest_click {window, selector?}` / `readest_click {window, x, y}` | Focus and click the way a user click reaches the app: `selector` is searched in the window's own document and then in the open book's own document(s) (so footnote links and paragraphs are reachable); `x`/`y` are pixel coordinates in the window's most recent `readest_screenshot`, converted back to CSS pixels on the Rust side (undoing an iframe's transform inside the book). The reply names what was clicked and which document it was found in; a selector that matches nothing comes back with the window's visible interactive elements to pick from |
 | `readest_press {window, key, modifiers?}` | Press one key through the app's own shortcut layer (`useShortcuts`, the same one real key presses reach). `handled` says whether a shortcut claimed it. Modifiers are `ctrl`/`alt`/`shift`/`meta`; a misspelt one is rejected rather than silently dropping to the bare key |
 | `readest_screenshot {window, wait_for_stable?}` | PNG of the window's rendered content, as MCP image content, plus a text part with the frame's `sha256`, byte count, and pixel/CSS size — equal hashes mean "nothing changed on screen". `wait_for_stable` waits for the window's JS, then keeps capturing until two consecutive frames are identical (~8s cap), so a post-reload shot is not a half-loaded frame |
 | `readest_settings {window}`   | Read-only: the view settings actually in effect (global defaults + each open book's merged overrides) |
@@ -310,10 +310,11 @@ instead carries a per-dispatch deadline (`Plan::Frontend.timeout`) taken from th
 caller's `timeout_ms`, and the frontend's share of it is 1s less (the transport
 keeps a further 5s of slack, since a window mid-reload may only see the action
 seconds after the call started), so the reason still comes from the frontend. `readest_click` and `readest_press` drive the real
-UI — a click goes in as a focus plus a `click` event, a press as a `keydown` on
+UI — a click goes in as a focus plus a `click` event (by selector, in the
+window's or the book's document; by x/y, via `elementFromPoint`), a press as a
+`keydown` on
 whichever element a real keystroke would target, both synthetic
-(`isTrusted: false`; nothing in the app checks that flag) — and neither reaches
-the book's own document, which has its own event listeners. Reload goes through
+(`isTrusted: false`; nothing in the app checks that flag). Reload goes through
 the app's own `beforereload` chain so reading positions are saved first, and
 `readest_open_book` / `readest_goto` reuse `showReaderWindow` /
 `focusExistingReaderWindow` and the reader's own `view.goTo`

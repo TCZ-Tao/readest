@@ -96,8 +96,21 @@ pub struct DebugState {
     /// In-flight actions, keyed by the id sent to the webview: the frontend's
     /// report lands here (see `debug_action_result`).
     pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
+    /// The most recent capture per window, in screenshot and CSS pixels, so a
+    /// coordinate click can be mapped from the image the caller saw onto the
+    /// window's own (CSS-pixel) coordinate system.
+    captures: Mutex<HashMap<String, CaptureMeta>>,
     /// Set while the listener runs; the toggle command owns its lifecycle.
     control: Mutex<Control>,
+}
+
+/// Scale between a window's screenshot pixels and its CSS pixels, taken at
+/// capture time: a resize between capture and click invalidates the pair, and
+/// the next screenshot repairs it.
+#[derive(Clone, Copy)]
+struct CaptureMeta {
+    png_width: u32,
+    css_width: f64,
 }
 
 #[derive(Default)]
@@ -117,6 +130,7 @@ impl DebugState {
             event_seq: AtomicU64::new(0),
             sessions: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            captures: Mutex::new(HashMap::new()),
             control: Mutex::new(Control::default()),
         }
     }
@@ -1014,14 +1028,16 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_click",
-            "description": "Click the first element matching a CSS selector, the way a user click reaches the app (it is focused, then gets a click event). The reply names what was clicked; when nothing matches it lists the window's visible interactive elements so you can pick a selector. Book content has its own document and is not covered — use readest_goto or readest_press for reading. Clicking reaches destructive UI too (a delete dialog's confirm button included); nothing here stops you.",
+            "description": "Click in a window the way a user click reaches the app (it is focused, then gets a click event): either by CSS `selector`, searched first in the window's own document and then in the open book's own document(s) (footnote links, paragraphs), or by `x`/`y` — pixel coordinates in this window's most recent readest_screenshot, which reaches whatever sits at that point, book content included. The reply names what was clicked and where it was found; a selector that matches nothing comes back with the window's visible interactive elements to pick from. Clicking reaches destructive UI too (a delete dialog's confirm button included); nothing here stops you.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "window": {"type": "string", "description": "Window label from readest_state."},
-                    "selector": {"type": "string", "description": "CSS selector, e.g. '#toc-button' or '[data-testid=...]'."}
+                    "selector": {"type": "string", "description": "CSS selector, e.g. '#toc-button', '[data-testid=...]', or 'a.epub-type-note' for a link in the book."},
+                    "x": {"type": "number", "description": "Pixel x in the window's most recent readest_screenshot (its metadata reports the pixel size); pass with `y` instead of `selector`."},
+                    "y": {"type": "number", "description": "Pixel y in the window's most recent readest_screenshot; pass with `x` instead of `selector`."}
                 },
-                "required": ["window", "selector"],
+                "required": ["window"],
                 "additionalProperties": false
             }
         },
@@ -1278,13 +1294,51 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "window is required: pass a label from readest_state",
                 )));
             };
-            let Some(selector) = args
+            let selector = args
                 .get("selector")
                 .and_then(Value::as_str)
-                .filter(|selector| !selector.is_empty())
-            else {
+                .filter(|selector| !selector.is_empty());
+            let point = match (
+                args.get("x").and_then(Value::as_f64),
+                args.get("y").and_then(Value::as_f64),
+            ) {
+                (Some(x), Some(y)) => Some((x, y)),
+                (None, None) => None,
+                _ => {
+                    return Some(ToolOutcome::Ready(error_result(
+                        "pass x and y together (pixel coordinates in the window's last screenshot)",
+                    )));
+                }
+            };
+            let action = if let Some((x, y)) = point {
+                if selector.is_some() {
+                    return Some(ToolOutcome::Ready(error_result(
+                        "pass selector or x/y — not both: selector finds an element by name, x/y hits whatever sits at that point",
+                    )));
+                }
+                // Coordinates arrive in the pixels of the caller's screenshot;
+                // the click has to be in the window's CSS pixels. The scale is
+                // the pair recorded when that screenshot was taken (the raster
+                // scale is uniform, so the width ratio serves both axes).
+                let Some(meta) = app
+                    .state::<DebugState>()
+                    .captures
+                    .lock()
+                    .unwrap()
+                    .get(label)
+                    .copied()
+                else {
+                    return Some(ToolOutcome::Ready(error_result(
+                        "no screenshot of this window yet: take readest_screenshot first, then pass x/y in its pixel coordinates",
+                    )));
+                };
+                let scale = meta.png_width as f64 / meta.css_width;
+                json!({"kind": "click", "x": x / scale, "y": y / scale})
+            } else if let Some(selector) = selector {
+                json!({"kind": "click", "selector": selector})
+            } else {
                 return Some(ToolOutcome::Ready(error_result(
-                    "selector is required: pass a CSS selector for the element to click",
+                    "pass selector, or x/y in the pixel coordinates of the window's last readest_screenshot",
                 )));
             };
             if let Some(error) = check(label) {
@@ -1292,7 +1346,7 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
             }
             Some(ToolOutcome::Deferred(Plan::Frontend {
                 labels: vec![label.to_string()],
-                action: json!({"kind": "click", "selector": selector}),
+                action,
                 timeout: ACTION_TIMEOUT,
             }))
         }
@@ -1535,6 +1589,17 @@ async fn screenshot_result(app: &AppHandle, label: &str, wait_for_stable: bool) 
     }
     let viewport = snapshot_viewport(app, label);
     let dims = png_dimensions(&png);
+    if let (Some((png_width, _)), Some((css_width, _))) = (dims, viewport) {
+        if css_width > 0.0 {
+            app.state::<DebugState>().captures.lock().unwrap().insert(
+                label.to_string(),
+                CaptureMeta {
+                    png_width,
+                    css_width,
+                },
+            );
+        }
+    }
     use base64::Engine;
     use sha2::Digest;
     let mut meta = match dims {

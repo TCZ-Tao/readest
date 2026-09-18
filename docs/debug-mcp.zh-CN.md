@@ -106,7 +106,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_reload` | `{window?}` | 重载该窗口；省略 `window` 则重载所有窗口。走 app 自己的 `beforereload` 链，先保存再重载 |
 | `readest_wait` | `{window, until, hash?, timeout_ms?}`，`window`/`until` 必填 | `until:'ready'`：等这个窗口的 JS 能应答（重载后即「新文档已起来」，返回值带 `boot` 方便比对）；`until:'book-loaded'`：等书加载完（判据与 `goto` 完全相同） |
 | `readest_close_window` | `{window}` 必填 | 走该窗口自己的关闭路径（标题栏 ✕ 那条）：先保存阅读位置、通知 `main`，再销毁窗口 |
-| `readest_click` | `{window, selector}` 必填 | 聚焦后点击第一个匹配 CSS 选择器的元素，返回点了什么；没匹配到会连同窗口里可见的可交互元素一起返回，便于换一个选择器 |
+| `readest_click` | `{window, selector?}` 或 `{window, x, y?}` | 聚焦后点击：`selector` 在窗口自己的 document 里找第一个匹配（找不到再找书内 iframe 的文档，能点到书里的脚注链接/段落），`x`/`y` 是该窗口**最近一次截图的像素坐标**（自动换算回 CSS 像素，书内 iframe 含缩放时会还原变换）。返回点了什么、在哪层文档找到的；选择器没匹配到会连同窗口里可见的可交互元素一起返回 |
 | `readest_press` | `{window, key, modifiers?}` 必填 | 在窗口里按一个键，走 app 自己的快捷键层；`handled` 说明是否有快捷键接管 |
 | `readest_screenshot` | `{window}` 必填；`wait_for_stable?` | 返回 MCP image content（PNG），另带一个 text part：`{sha256, bytes, width, height, cssWidth, cssHeight[, stable]}`。`wait_for_stable: true` 先等窗口 JS 应答、再连续拍到两帧完全相同才返回（约 8 秒封顶），适合 reload 后避免拍到半帧；reply 的 `stable` 说明是否真的稳定了下来 |
 
@@ -127,7 +127,14 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
   ```
   `until:'ready'` 之所以能代表「新文档起来了」：Rust 会每秒重发动作直到有监听器应答，所以这条命令
   能在窗口内跑起来，本身就说明新文档已经挂上监听器。
-- **`click` 点得到什么、点不到什么**：只覆盖窗口自己的文档（`document.querySelector`）；书的内容在 iframe 自己的文档里，不在这条范围内，读书相关的操作请用 `goto`/`press`。命中后先 `focus` 再 `click`，和真实点击一致；这是合成事件（`isTrusted:false`），但 app 里没有任何地方检查 `isTrusted`（`grep isTrusted apps/readest-app/src` 为空），所以 React 的 onClick、`<summary>` 原生展开这类都照常响应；需要真实按下/抬起序列的交互（拖拽选择、画线）不覆盖。
+- **`click` 点得到什么、点不到什么**：选择器先搜窗口自己的 document（`document.querySelector`），再搜
+  书内容所在的 iframe 文档（`view.renderer.getContents()`，滚动模式下可能有多份）；坐标点击走
+  `elementFromPoint`，落在书内 iframe 里的点会减去 iframe 的位置、并按其 computed transform 还原缩放后
+  在书内文档里再解析一次。命中后先 `focus` 再 `click`，和真实点击一致；这是合成事件
+  （`isTrusted:false`），但 app 里没有任何地方检查 `isTrusted`（`grep isTrusted apps/readest-app/src`
+  为空），所以 React 的 onClick、`<summary>` 原生展开、书内链接的内部跳转都照常响应；需要真实按下/抬起
+  序列的交互（拖拽选择、画线）不覆盖。坐标换算用的是「最近一次截图」时的缩放对，截图之后窗口改了尺寸
+  就先重截一张。
 - **`press` 落在「真实按键会落到的地方」**：在 `document.activeElement ?? body` 上派发 keydown，所以事件路径、以及「输入框里不触发快捷键」的行为都和真人按键一致；`handled` 来自快捷键层（`useShortcuts`）调用 preventDefault。键名用 `KeyboardEvent.key`（`ArrowRight`、`Escape`、`b`…），修饰键只认 `ctrl`/`alt`/`shift`/`meta`——拼错会直接报错，而不是静默按成裸键。
 - **`close_window` 就是窗口的 ✕**：前端调用 `tauriHandleClose`，走 `onCloseRequested` 那条链（`handleCloseBooks` 保存进度 → 通知 `main` → 300ms 后 destroy），所以不丢阅读位置；正因为它真的关窗口，关掉最后一个窗口可能连带结束进程和这个服务。
 - **`goto` 只做「能定位」的事**：`cfi` 直接交给 `view.goTo`；`page` 复用页脚翻页输入的同一套代码
