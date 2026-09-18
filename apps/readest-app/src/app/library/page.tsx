@@ -29,6 +29,7 @@ import { ingestFile } from '@/services/ingestService';
 import { eventDispatcher } from '@/utils/event';
 import { transferManager } from '@/services/transferManager';
 import { isReadestCloudStorageActive } from '@/services/sync/cloudSyncProvider';
+import { initDebugReporting } from '@/services/debugReport';
 import { getFilename, getFolderImportGroupName, joinScannedPath } from '@/utils/path';
 import { parseOpenWithFiles } from '@/helpers/openWith';
 import {
@@ -538,6 +539,7 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
 
   useEffect(() => {
     if (appService?.hasWindow) {
+      initDebugReporting();
       const currentWebview = getCurrentWebview();
       const unlisten = currentWebview.listen('close-reader-window', async () => {
         // Reader windows are independent Tauri webviews with their own

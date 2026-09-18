@@ -68,6 +68,10 @@ fn main() {
             "localsend_send_files",
             "localsend_cancel_send",
             "find_reader_window_with_book",
+            "debug_report_state",
+            "debug_console_log",
+            "debug_server_set_enabled",
+            "debug_server_status",
         ]),
     ))
     .expect("failed to run tauri-build");

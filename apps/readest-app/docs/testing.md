@@ -227,6 +227,64 @@ XPOINTER_ORACLE=/path/to/book.crengine.json pnpm test src/__tests__/utils/xcfi.c
 The JSON's `epub` field is an absolute path or a file next to the JSON. The emulator is a local
 build (`kodev` in a KOReader checkout); nothing in CI needs it.
 
+## Debug MCP (in-app, dev builds)
+
+Desktop debug builds compile a **read-only** debug HTTP server into the app
+(`src-tauri/src/debug_server.rs`); release builds never contain it (the module is
+gated on `debug_assertions`, not on a cargo feature). It exposes state invisible
+from outside a running Tauri app, both as plain JSON endpoints and as an MCP
+server any MCP client can attach to.
+
+Turn it on in **Settings → Misc → Developer → "MCP Debug Server"** (persisted as
+`debugMcpEnabled` in `settings.json`; off by default, so normal dev runs open no
+port). The section shows the client config to paste — no wrapper process, no
+per-client registration script:
+
+```json
+{
+  "type": "http",
+  "url": "http://127.0.0.1:9339/mcp",
+  "headers": { "Authorization": "Bearer <token>" }
+}
+```
+
+- Binds `127.0.0.1:9339` (override with `READEST_DEBUG_PORT`); every request needs
+  `Authorization: Bearer <token>`
+- The token is generated once and persisted to
+  `%APPDATA%\com.bilingify.readest\debug-mcp-token`, so a client configured once
+  keeps working across app restarts
+- Enabling also writes `{port, token, pid}` to
+  `%LOCALAPPDATA%\com.bilingify.readest\logs\debug-mcp.json` for out-of-process tools
+- Closing an EPUB window must still flush probes: the reader window reports on
+  `pagehide` / `visibilitychange`, so `readest_state` reflects the last frame even
+  for a window that is gone
+
+| Endpoint              | Returns                                                                    |
+| --------------------- | -------------------------------------------------------------------------- |
+| `GET /health`         | pid, uptime, app version (also verifies the bearer token)                   |
+| `GET /state`          | window list (label/title/URL), books per reader window (`?ids=`), per-window JS snapshots (open books + live progress) |
+| `GET /logs?n=200`     | browser-console tail across all windows (labelled)                          |
+| `GET /events?since=0` | window lifecycle events (close_requested/destroyed/focused/blurred), incremental ids |
+| `POST /mcp`           | MCP Streamable HTTP: `initialize`, `notifications/initialized`, `tools/list`, `tools/call` (JSON-RPC 2.0; sessions via `Mcp-Session-Id`, `GET /mcp` keepalive stream, `DELETE /mcp` closes a session) |
+| `GET /mcp`            | `text/event-stream` keepalive for clients that open the server→client stream |
+
+The MCP tools are `readest_state`, `readest_logs {n}`, `readest_events {since}` —
+the same three payloads as the JSON endpoints.
+
+Verified against the official SDK client (`pnpm exec node scripts/mcp-parity.mjs
+<token>` while the app runs with the server on): initialize/tools-list/three tool
+calls plus a wrong-token rejection.
+
+### Driving the UI on Windows
+
+`pnpm tauri:dev:cdp` (CDP) only exists on the Linux CEF build, and on Windows a WebView2
+`--remote-debugging-port` cannot be applied uniformly — browser-process arguments are fixed by
+the first webview and JS-created reader windows would fail with mismatched args. To drive the
+UI on Windows use the WebDriver lane (`--features webdriver`, port 4445, see E2E above), or the
+OS itself: launching the exe with a book path as argv opens it in the running instance
+(single-instance forwarding), and PowerShell `(Get-Process Readest).MainWindowHandle` +
+`CloseMainWindow()` delivers a real WM_CLOSE.
+
 ## Test File Naming
 
 | Suffix              | Runner              | Environment           |

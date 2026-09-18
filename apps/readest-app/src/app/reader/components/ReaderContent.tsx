@@ -19,6 +19,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { UnlistenFn } from '@tauri-apps/api/event';
 import { tauriHandleClose, tauriHandleOnCloseWindow } from '@/utils/window';
 import { isTauriAppPlatform } from '@/services/environment';
+import { initDebugReporting } from '@/services/debugReport';
 import { splitLibraryOpenIds } from '@/utils/audiobook';
 import { uniqueId } from '@/utils/misc';
 import { throttle } from '@/utils/throttle';
@@ -204,6 +205,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   }, [user, _]);
 
   useEffect(() => {
+    initDebugReporting();
     if (bookKeys && bookKeys.length > 0) {
       const settings = useSettingsStore.getState().settings;
       const lastOpenBooks = bookKeys.map((key) => key.split('-')[0]!);

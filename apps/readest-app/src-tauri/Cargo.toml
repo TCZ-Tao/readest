@@ -31,6 +31,9 @@ cef = ["tauri/cef"]
 cargo-clippy = []
 # Enable WebDriver plugin for E2E testing (use with `tauri build --debug --features webdriver`)
 webdriver = ["tauri-plugin-webdriver"]
+# The debug server (src/debug_server.rs) needs no feature flag: it compiles into
+# every desktop debug build and is switched on from Settings → Misc → Developer
+# (`debugMcpEnabled`).
 devtools = ["tauri/devtools"]
 
 [build-dependencies]

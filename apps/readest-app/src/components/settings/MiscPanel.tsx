@@ -7,10 +7,11 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useResetViewSettings } from '@/hooks/useResetSettings';
 import { SettingsPanelPanelProp } from './SettingsDialog';
-import { saveViewSettings } from '@/helpers/settings';
+import { saveSysSettings, saveViewSettings } from '@/helpers/settings';
 import { validateCSS, formatCSS } from '@/utils/css';
 import { getStyles } from '@/utils/style';
-import { BoxedList } from './primitives';
+import { getDebugServerStatus, DebugServerStatus } from '@/services/debugReport';
+import { BoxedList, SectionTitle, SettingsSwitchRow } from './primitives';
 
 type CSSType = 'book' | 'reader';
 
@@ -31,6 +32,26 @@ const MiscPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const [inputFocusInAndroid, setInputFocusInAndroid] = useState(false);
   const contentTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const uiTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // null = this build has no debug server at all (release builds), so the whole
+  // Developer section stays hidden instead of offering a switch that does nothing.
+  const [debugServer, setDebugServer] = useState<DebugServerStatus | null>(null);
+
+  const refreshDebugServer = () => {
+    void getDebugServerStatus().then(setDebugServer);
+  };
+
+  useEffect(() => {
+    refreshDebugServer();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleDebugServer = () => {
+    // The Rust listener follows the settings subscription
+    // (services/debugReport.ts); this only has to persist the switch and refresh
+    // the status a moment later so the endpoint/details line up with it.
+    void saveSysSettings(envConfig, 'debugMcpEnabled', !settings.debugMcpEnabled);
+    setTimeout(refreshDebugServer, 300);
+  };
 
   const resetToDefaults = useResetViewSettings();
 
@@ -214,6 +235,34 @@ const MiscPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
         draftUIStylesheetSaved,
         uiTextareaRef,
         'settings.custom.readerUiCss',
+      )}
+
+      {debugServer && (
+        <div className='w-full' data-setting-id='settings.misc.debugMcp'>
+          <SectionTitle className='mb-2'>{_('Developer')}</SectionTitle>
+          <BoxedList innerClassName='ps-0!'>
+            <SettingsSwitchRow
+              label={_('MCP Debug Server')}
+              description={debugServer.url ?? _('Let AI clients inspect this app over MCP')}
+              checked={settings.debugMcpEnabled}
+              onChange={toggleDebugServer}
+            />
+            {settings.debugMcpEnabled && debugServer.url && (
+              <div className='px-1 pb-1'>
+                {/* Read-only config, selected on focus so the user can copy it
+                    straight into any MCP client. */}
+                <textarea
+                  readOnly
+                  spellCheck={false}
+                  data-setting-id='settings.misc.debugMcp.config'
+                  className='textarea textarea-ghost h-24 w-full border-0 p-3 font-mono text-xs outline-hidden!'
+                  value={`{"type":"http","url":"${debugServer.url}","headers":{"Authorization":"Bearer ${debugServer.token}"}}`}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+              </div>
+            )}
+          </BoxedList>
+        </div>
       )}
     </div>
   );

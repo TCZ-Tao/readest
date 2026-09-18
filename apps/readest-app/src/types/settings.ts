@@ -455,6 +455,12 @@ export interface SystemSettings {
   savedBookCoverForLockScreenPath: string;
   telemetryEnabled: boolean;
   discordRichPresenceEnabled: boolean;
+  /**
+   * Dev-only: run the in-app MCP debug server (src-tauri/src/debug_server.rs)
+   * so any MCP client can attach to 127.0.0.1:9339/mcp. Device-local, ignored
+   * by release builds (which do not compile the module at all).
+   */
+  debugMcpEnabled: boolean;
   libraryViewMode: LibraryViewModeType;
   librarySortBy: LibrarySortByType;
   librarySortAscending: boolean;

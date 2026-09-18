@@ -27,6 +27,8 @@ mod browser_cookies_macos;
 mod browser_fetch;
 mod clip_url;
 mod cover_thumbnail;
+#[cfg(all(debug_assertions, desktop))]
+mod debug_server;
 mod dir_scanner;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod discord_rpc;
@@ -544,6 +546,14 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             nightly_update::install_nightly_update,
             find_reader_window_with_book,
+            #[cfg(all(debug_assertions, desktop))]
+            debug_server::debug_report_state,
+            #[cfg(all(debug_assertions, desktop))]
+            debug_server::debug_console_log,
+            #[cfg(all(debug_assertions, desktop))]
+            debug_server::debug_server_set_enabled,
+            #[cfg(all(debug_assertions, desktop))]
+            debug_server::debug_server_status,
         ])
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_persisted_scope::init())
@@ -640,6 +650,9 @@ pub fn run() {
                 app.manage(discord_client);
             }
             app.manage(localsend::LocalSendState::default());
+
+            #[cfg(all(debug_assertions, desktop))]
+            app.manage(debug_server::DebugState::new());
 
             #[cfg(desktop)]
             {
@@ -888,6 +901,10 @@ pub fn run() {
         .run(
             #[allow(unused_variables)]
             |app_handle, event| {
+                #[cfg(all(debug_assertions, desktop))]
+                if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
+                    debug_server::record_window_event(app_handle, label, event);
+                }
                 #[cfg(target_os = "macos")]
                 match event {
                     tauri::RunEvent::Opened { urls } => {
