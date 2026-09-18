@@ -70,6 +70,7 @@ fn main() {
             "find_reader_window_with_book",
             "debug_report_state",
             "debug_console_log",
+            "debug_action_result",
             "debug_server_set_enabled",
             "debug_server_status",
         ]),

@@ -214,6 +214,12 @@ discord-rich-presence = "1.0.0"
 # Resolve the user's default browser from the registry for the cold-browser
 # OAuth-redirect fallback (see src/spawn_fresh_browser.rs).
 winreg = "0.52"
+# Debug-MCP screenshots: WebView2's CapturePreview writes a PNG into an
+# in-memory IStream (see debug_server.rs). These must resolve to the same
+# versions tauri-runtime-wry uses, or the handles it hands out won't match —
+# wry 0.56 pulls webview2-com 0.38, which builds on windows 0.61.
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_System_Com_StructuredStorage"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 libc = "0.2"

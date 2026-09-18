@@ -71,7 +71,16 @@ check(note.status === 202 && note.body === '', 'notifications/initialized -> 202
 const list = JSON.parse((await call('tools/list', {})).body);
 const names = (list.result?.tools ?? []).map((tool) => tool.name).sort();
 check(
-  names.join(',') === 'readest_events,readest_logs,readest_state',
+  names.join(',') ===
+    [
+      'readest_events',
+      'readest_goto',
+      'readest_logs',
+      'readest_open_book',
+      'readest_reload',
+      'readest_screenshot',
+      'readest_state',
+    ].join(','),
   'tools/list',
   names.join(', '),
 );
@@ -89,6 +98,31 @@ for (const [name, args] of [
     `tools/call ${name}`,
     typeof text === 'string' ? `${text.slice(0, 80).replace(/\s+/g, ' ')}…` : JSON.stringify(call_).slice(0, 120),
   );
+}
+
+// Action tools: argument validation and targeting happen before anything runs,
+// so these two need no reader window and touch nothing.
+for (const [name, args, why] of [
+  ['readest_goto', { cfi: 'epubcfi(/6/4)' }, 'missing window'],
+  ['readest_screenshot', { window: 'no-such-window' }, 'unknown window'],
+]) {
+  const call_ = JSON.parse((await call('tools/call', { name, arguments: args })).body);
+  check(call_.result?.isError === true, `${name} rejects ${why}`, JSON.stringify(call_.result).slice(0, 120));
+}
+
+// A screenshot of a live window is PNG image content, not text.
+const state = JSON.parse(JSON.parse((await call('tools/call', { name: 'readest_state' })).body).result.content[0].text);
+const window = state.windows?.[0]?.label;
+if (window) {
+  const shot = JSON.parse((await call('tools/call', { name: 'readest_screenshot', arguments: { window } })).body);
+  const image = shot.result?.content?.[0];
+  check(
+    image?.type === 'image' && image.mimeType === 'image/png' && (image.data?.length ?? 0) > 1000,
+    `readest_screenshot ${window} -> PNG image content`,
+    image?.type === 'image' ? `${image.data.length} base64 chars` : JSON.stringify(shot.result).slice(0, 160),
+  );
+} else {
+  console.log('skip readest_screenshot: no window open');
 }
 
 // unknown method and unknown tool are JSON-RPC errors, not crashes

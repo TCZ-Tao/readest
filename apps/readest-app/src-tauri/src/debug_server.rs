@@ -1,7 +1,14 @@
-//! Dev-only MCP debug server, hosted *inside* the app: a read-only HTTP server
-//! on 127.0.0.1 serving both the plain JSON endpoints (/health, /state, /logs,
+//! Dev-only MCP debug server, hosted *inside* the app: an HTTP server on
+//! 127.0.0.1 serving both the plain JSON endpoints (/health, /state, /logs,
 //! /events) and an MCP Streamable HTTP endpoint at /mcp, so any MCP client can
 //! attach with just a URL and a bearer token — no per-client stdio wrapper.
+//!
+//! The tools are read-only state readers plus a small set of *actions* (open a
+//! book, jump to a location, reload a window, screenshot it) so an AI can close
+//! the edit → reload → look loop itself. Actions reach the webviews over a Tauri
+//! event and report back through `debug_action_result`; screenshots are taken by
+//! the platform webview (see `capture_png`). All of it is deliberately limited
+//! to operations that lose nothing: no file, setting, or library mutation.
 //!
 //! Compiled into desktop debug builds only (`debug_assertions`), never into
 //! release, and off until the user flips Developer → "MCP Debug Server" in
@@ -12,19 +19,28 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State, Url, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewWindow, WindowEvent};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const DEFAULT_PORT: u16 = 9339;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
-const SOCKET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const CONSOLE_CAPACITY: usize = 1000;
 const EVENT_CAPACITY: usize = 500;
 const TOKEN_FILE: &str = "debug-mcp-token";
+/// Event name carrying an action into a webview (listened to in
+/// services/debugReport.ts). Only `[A-Za-z0-9_-/]` and `:` are legal in a Tauri
+/// event name.
+const ACTION_EVENT: &str = "debug://action";
+/// Actions run in a webview the AI also drives by hand; a window that never
+/// answers must not hang the tool call, so both waits are bounded.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Protocol revisions this server speaks, newest first. `initialize` echoes the
 /// client's own revision when it is supported, else offers the newest.
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -39,6 +55,9 @@ pub struct DebugState {
     event_seq: AtomicU64,
     /// Live MCP sessions (`Mcp-Session-Id` -> negotiated protocol revision).
     sessions: Mutex<HashMap<String, String>>,
+    /// In-flight actions, keyed by the id sent to the webview: the frontend's
+    /// report lands here (see `debug_action_result`).
+    pending: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>,
     /// Set while the listener runs; the toggle command owns its lifecycle.
     control: Mutex<Control>,
 }
@@ -59,6 +78,7 @@ impl DebugState {
             events: Mutex::new(VecDeque::new()),
             event_seq: AtomicU64::new(0),
             sessions: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
             control: Mutex::new(Control::default()),
         }
     }
@@ -98,6 +118,19 @@ pub fn debug_console_log(window: WebviewWindow, state: State<'_, DebugState>, en
         }
         push_capped(&mut console, entry, CONSOLE_CAPACITY);
     }
+}
+
+/// Result of an action dispatched to this webview (`ACTION_EVENT`). Returns
+/// whether a caller was still waiting: a report that arrives after
+/// `ACTION_TIMEOUT` is dropped, which is expected when a window is wedged.
+#[tauri::command]
+pub fn debug_action_result(state: State<'_, DebugState>, id: String, result: Value) -> bool {
+    state
+        .pending
+        .lock()
+        .unwrap()
+        .remove(&id)
+        .is_some_and(|reply| reply.send(result).is_ok())
 }
 
 /// Start/stop the listener at runtime. The frontend calls this once per boot
@@ -483,11 +516,20 @@ async fn handle_mcp_post(
     } else {
         session.map(str::to_string)
     };
-    let reply = mcp_message(
-        &|name, args| call_tool(app, name, args),
+    let mut reply = mcp_message(
+        &|name, args| tool_outcome(app, name, args),
         message,
         session_id.as_deref(),
     );
+    // A deferred tool call only got as far as picking its target: run it here,
+    // where the request is already async, and overwrite the placeholder reply.
+    if let Some(deferred) = reply.deferred.take() {
+        let result = match deferred.plan {
+            Plan::Frontend { labels, action } => run_frontend_action(app, &labels, &action).await,
+            Plan::Screenshot { label } => screenshot_result(app, &label).await,
+        };
+        reply = McpReply::json(rpc_ok(&deferred.id, result));
+    }
     write_response(
         stream,
         reply.status,
@@ -504,6 +546,132 @@ async fn handle_mcp_post(
 }
 
 // ---------------------------------------------------------------------------
+// Action tools: Rust -> webview -> Rust
+//
+// Read tools are answered from the in-process buffers, but an action has to run
+// inside a window (the library window owns book opening, a reader window owns
+// its view) or inside the platform webview. Those calls are *deferred*: the
+// protocol layer picks the target and `handle_mcp_post` awaits the result.
+// ---------------------------------------------------------------------------
+
+/// What a deferred tool call needs before it can be answered.
+enum Plan {
+    /// Run `action` in every listed window and collect their reports. A list
+    /// (not a single label) so `readest_reload` can mean "all windows".
+    Frontend {
+        labels: Vec<String>,
+        action: Value,
+    },
+    Screenshot {
+        label: String,
+    },
+}
+
+/// A tool call's answer, or the plan that has to run before there is one.
+enum ToolOutcome {
+    Ready(Value),
+    Deferred(Plan),
+}
+
+/// A tool reply that has to wait for a webview (or for the platform capture).
+struct Deferred {
+    id: Value,
+    plan: Plan,
+}
+
+fn text_result(text: impl std::fmt::Display) -> Value {
+    json!({"content": [{"type": "text", "text": text.to_string()}]})
+}
+
+/// MCP reports tool failures in the result (`isError`), not as JSON-RPC errors:
+/// the call was well formed, the world said no.
+fn error_result(text: impl std::fmt::Display) -> Value {
+    json!({"content": [{"type": "text", "text": text.to_string()}], "isError": true})
+}
+
+fn window_labels(app: &AppHandle) -> Vec<String> {
+    let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+    labels.sort();
+    labels
+}
+
+/// A tool that names a window gets a useful error instead of a silent no-op.
+fn require_window(app: &AppHandle, label: &str) -> Result<(), String> {
+    if app.get_webview_window(label).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "no window labelled '{label}'; open windows: {}",
+        window_labels(app).join(", ")
+    ))
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Relays one action to one window and waits for its report. A closed or wedged
+/// window is an error for the caller — never a hang.
+async fn dispatch_action(app: &AppHandle, label: &str, action: &Value) -> Result<Value, String> {
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    app.state::<DebugState>()
+        .pending
+        .lock()
+        .unwrap()
+        .insert(id.clone(), reply);
+    let drop_pending = |id: &str| {
+        app.state::<DebugState>().pending.lock().unwrap().remove(id);
+    };
+    if let Err(e) = app.emit_to(label, ACTION_EVENT, json!({"id": id, "action": action})) {
+        drop_pending(&id);
+        return Err(format!("cannot reach window '{label}': {e}"));
+    }
+    match tokio::time::timeout(ACTION_TIMEOUT, answer).await {
+        Ok(Ok(report)) => Ok(report),
+        Ok(Err(_)) => Err(format!("window '{label}' closed before reporting")),
+        Err(_) => {
+            drop_pending(&id);
+            Err(format!(
+                "window '{label}' did not report within {}s",
+                ACTION_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// Runs the action in every target window and relays what each reported. The
+/// whole call is only an error when *some* window failed, so a reload-all still
+/// shows the windows that did reload.
+async fn run_frontend_action(app: &AppHandle, labels: &[String], action: &Value) -> Value {
+    let mut results = Vec::new();
+    for label in labels {
+        results.push(match dispatch_action(app, label, action).await {
+            Ok(report) => json!({"window": label, "report": report}),
+            Err(error) => json!({"window": label, "error": error}),
+        });
+    }
+    let failed = results.iter().any(|entry| {
+        entry.get("error").is_some() || entry["report"]["ok"].as_bool() == Some(false)
+    });
+    let payload = json!({"results": results});
+    if failed {
+        error_result(payload)
+    } else {
+        text_result(payload)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MCP Streamable HTTP (JSON-RPC 2.0 over POST). Hand-rolled on purpose: the
 // transport is small, the tool surface is fixed, and the crate carries no MCP
 // dependency — the schemas below are the contract, and the tests cover them.
@@ -516,6 +684,9 @@ struct McpReply {
     body: String,
     /// Send `Mcp-Session-Id` back: only `initialize` does, per spec.
     emit_session: bool,
+    /// Set when the tool call has to run before the reply body exists;
+    /// `handle_mcp_post` overwrites the (empty) placeholder.
+    deferred: Option<Deferred>,
 }
 
 impl McpReply {
@@ -526,6 +697,14 @@ impl McpReply {
             content_type: "application/json",
             body: payload.to_string(),
             emit_session: false,
+            deferred: None,
+        }
+    }
+
+    fn deferred(id: Value, plan: Plan) -> Self {
+        Self {
+            deferred: Some(Deferred { id, plan }),
+            ..Self::json(Value::Null)
         }
     }
 
@@ -543,6 +722,7 @@ impl McpReply {
             content_type: "application/json",
             body: String::new(),
             emit_session: false,
+            deferred: None,
         }
     }
 }
@@ -556,9 +736,11 @@ fn rpc_err(id: &Value, code: i64, message: &str) -> Value {
 }
 
 /// Handles one JSON-RPC message. Notifications (no `id`) get 202 with no body;
-/// `initialize` is answered with the session the transport just minted.
+/// `initialize` is answered with the session the transport just minted. The
+/// injected `tool_call` keeps the tool surface out of the protocol layer, so
+/// the protocol arms below are testable without a live app.
 fn mcp_message(
-    read_tool: &dyn Fn(&str, &Value) -> Option<Value>,
+    tool_call: &dyn Fn(&str, &Value) -> Option<ToolOutcome>,
     message: Value,
     session: Option<&str>,
 ) -> McpReply {
@@ -592,7 +774,7 @@ fn mcp_message(
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "readest-debug", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Readest in-app debug tools (read-only): window/reader state, browser-console tail, window lifecycle events. The app must be running with the MCP debug server enabled in Settings → Misc → Developer.",
+                    "instructions": "Readest in-app debug tools: window/reader state, browser-console tail, window lifecycle events, plus actions (open a book, jump to a location, reload a window, screenshot it). The app must be running with the MCP debug server enabled in Settings → Misc → Developer.",
                 }),
             ))
         }
@@ -601,11 +783,9 @@ fn mcp_message(
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            match read_tool(name, &args) {
-                Some(value) => McpReply::json(rpc_ok(
-                    &id,
-                    json!({"content": [{"type": "text", "text": value.to_string()}]}),
-                )),
+            match tool_call(name, &args) {
+                Some(ToolOutcome::Ready(result)) => McpReply::json(rpc_ok(&id, result)),
+                Some(ToolOutcome::Deferred(plan)) => McpReply::deferred(id.clone(), plan),
                 None => McpReply::json(rpc_err(&id, -32602, &format!("unknown tool: {name}"))),
             }
         }
@@ -641,12 +821,70 @@ fn tool_catalog() -> Value {
                 },
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "readest_open_book",
+            "description": "Open books in Readest by hash. A single hash focuses the reader window that already has it open, otherwise a reader window is created. The window appears asynchronously: poll readest_state for it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hashes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "Book hashes to open together, as reported by readest_state."
+                    }
+                },
+                "required": ["hashes"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_goto",
+            "description": "Move a reader window's view to a location: a CFI (or an href/landmark) via `cfi`, or a 1-based page number via `page`. Rejects when the book has no page count yet.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Reader window label from readest_state."},
+                    "hash": {"type": "string", "description": "Which book to move, when the window has several open (default: the first one)."},
+                    "cfi": {"type": "string", "description": "Target CFI, href, or landmark."},
+                    "page": {"type": "integer", "minimum": 1, "description": "Target page number, 1-based: use `section` for fixed-layout books (the number the footer shows) and `pageinfo` for reflowable ones."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_reload",
+            "description": "Reload a window (or every window) like Ctrl+R, going through the app's own before-reload save chain so no reading position is lost. Use it to pick up frontend edits when HMR is unreliable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state (default: every open window)."}
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "readest_screenshot",
+            "description": "PNG screenshot of one window's rendered content, returned as MCP image content so it can be looked at directly. Works while the window is occluded. Windows only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string", "description": "Window label from readest_state."}
+                },
+                "required": ["window"],
+                "additionalProperties": false
+            }
         }
     ])
 }
 
-fn call_tool(app: &AppHandle, name: &str, args: &Value) -> Option<Value> {
-    match name {
+/// Answers a tool call: read tools immediately, actions as a plan the caller
+/// runs. `None` means no such tool (the protocol layer turns that into -32602).
+fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome> {
+    // Read tools answer from the in-process buffers.
+    let ready = match name {
         "readest_state" => Some(state_body(app)),
         "readest_logs" => {
             let n = args
@@ -659,6 +897,92 @@ fn call_tool(app: &AppHandle, name: &str, args: &Value) -> Option<Value> {
         "readest_events" => {
             let since = args.get("since").and_then(Value::as_u64).unwrap_or(0);
             Some(events_body(app, since))
+        }
+        _ => None,
+    };
+    if let Some(body) = ready {
+        return Some(ToolOutcome::Ready(text_result(body)));
+    }
+
+    let window = args.get("window").and_then(Value::as_str);
+    let check = |label: &str| match require_window(app, label) {
+        Ok(()) => None,
+        Err(e) => Some(ToolOutcome::Ready(error_result(e))),
+    };
+    match name {
+        // The library window owns book opening (services/debugReport.ts runs
+        // showReaderWindow/focusExistingReaderWindow there).
+        "readest_open_book" => {
+            let hashes = string_array(args.get("hashes"));
+            if hashes.is_empty() {
+                return Some(ToolOutcome::Ready(error_result(
+                    "hashes must name at least one book hash",
+                )));
+            }
+            if let Some(error) = check("main") {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec!["main".to_string()],
+                action: json!({"kind": "open-book", "hashes": hashes}),
+            }))
+        }
+        "readest_goto" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            let cfi = args.get("cfi").and_then(Value::as_str);
+            let page = args.get("page").and_then(Value::as_i64);
+            if cfi.is_none() && page.is_none() {
+                return Some(ToolOutcome::Ready(error_result(
+                    "pass cfi or page for the target location",
+                )));
+            }
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec![label.to_string()],
+                action: json!({
+                    "kind": "goto",
+                    "hash": args.get("hash"),
+                    "cfi": cfi,
+                    "page": page,
+                }),
+            }))
+        }
+        "readest_reload" => {
+            let labels = match window {
+                Some(label) => {
+                    if let Some(error) = check(label) {
+                        return Some(error);
+                    }
+                    vec![label.to_string()]
+                }
+                None => window_labels(app),
+            };
+            if labels.is_empty() {
+                return Some(ToolOutcome::Ready(error_result("no windows are open")));
+            }
+            Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels,
+                action: json!({"kind": "reload"}),
+            }))
+        }
+        "readest_screenshot" => {
+            let Some(label) = window else {
+                return Some(ToolOutcome::Ready(error_result(
+                    "window is required: pass a label from readest_state",
+                )));
+            };
+            if let Some(error) = check(label) {
+                return Some(error);
+            }
+            Some(ToolOutcome::Deferred(Plan::Screenshot {
+                label: label.to_string(),
+            }))
         }
         _ => None,
     }
@@ -724,6 +1048,124 @@ fn events_body(app: &AppHandle, since: u64) -> Value {
     json!({"events": matched, "last_id": last_id})
 }
 
+/// Screenshot as MCP image content, or the reason it could not be taken.
+async fn screenshot_result(app: &AppHandle, label: &str) -> Value {
+    let Some(window) = app.get_webview_window(label) else {
+        return error_result(format!("no window labelled '{label}'"));
+    };
+    match capture_png(&window).await {
+        Ok(png) => {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD.encode(png);
+            json!({"content": [{"type": "image", "data": data, "mimeType": "image/png"}]})
+        }
+        Err(e) => error_result(e),
+    }
+}
+
+/// WebView2 renders through DirectComposition, so OS-level window capture
+/// (PrintWindow/BitBlt) returns the frame with a blank client area;
+/// `ICoreWebView2::CapturePreview` is the call that actually renders the page,
+/// and it works while the window is occluded or behind others.
+#[cfg(windows)]
+async fn capture_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+
+    // `mpsc` (not `oneshot`) only because a synchronous `CapturePreview`
+    // failure has to report through the same channel the callback uses.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    window
+        .with_webview(move |platform| {
+            // A null HGLOBAL asks for a stream that grows as the PNG is written.
+            let stream = match unsafe { CreateStreamOnHGlobal(HGLOBAL::default(), true) } {
+                Ok(stream) => stream,
+                Err(e) => {
+                    let _ = tx.try_send(Err(format!("cannot create the capture stream: {e}")));
+                    return;
+                }
+            };
+            let webview = match unsafe { platform.controller().CoreWebView2() } {
+                Ok(webview) => webview,
+                Err(e) => {
+                    let _ = tx.try_send(Err(format!("cannot reach the WebView2: {e}")));
+                    return;
+                }
+            };
+            // The completion arrives on the message loop the main thread is
+            // already pumping, and the bytes are read there too — the stream is
+            // read on the thread that created it, so no COM marshalling. A
+            // callback that never fires is the caller's timeout, not a hang.
+            let readback = stream.clone();
+            let handler_tx = tx.clone();
+            let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+                let outcome = match result {
+                    Ok(()) => read_stream(&readback),
+                    Err(e) => Err(format!("CapturePreview failed: {e}")),
+                };
+                let _ = handler_tx.try_send(outcome);
+                Ok(())
+            }));
+            if let Err(e) = unsafe {
+                webview.CapturePreview(
+                    COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                    &stream,
+                    &handler,
+                )
+            } {
+                let _ = tx.try_send(Err(format!("CapturePreview was rejected: {e}")));
+            }
+        })
+        .map_err(|e| format!("cannot reach the window's webview: {e}"))?;
+
+    match tokio::time::timeout(SCREENSHOT_TIMEOUT, rx.recv()).await {
+        Ok(Some(result)) => result,
+        Ok(None) => Err("the capture channel closed".to_string()),
+        Err(_) => Err(format!(
+            "the webview did not finish capturing within {}s",
+            SCREENSHOT_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn read_stream(stream: &windows::Win32::System::Com::IStream) -> Result<Vec<u8>, String> {
+    use windows::Win32::System::Com::{ISequentialStream, STREAM_SEEK_SET};
+    unsafe {
+        stream
+            .Seek(0, STREAM_SEEK_SET, None)
+            .map_err(|e| format!("cannot rewind the capture stream: {e}"))?;
+        let reader: &ISequentialStream = stream.into();
+        let mut png = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let mut read = 0u32;
+            reader
+                .Read(
+                    chunk.as_mut_ptr().cast(),
+                    chunk.len() as u32,
+                    Some(&mut read),
+                )
+                .ok()
+                .map_err(|e| format!("cannot read the capture stream: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            png.extend_from_slice(&chunk[..read as usize]);
+        }
+        Ok(png)
+    }
+}
+
+/// macOS/Linux are outside this fork's targets; the Linux CEF build does not
+/// even compile `with_webview`.
+#[cfg(not(windows))]
+async fn capture_png(_window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    Err("screenshots are implemented for Windows (WebView2) only".to_string())
+}
+
 // The JSON-RPC envelope and the tool catalog are the testable surface of /mcp;
 // the listener and the tool readers need a live Tauri app, so these drive
 // `mcp_message` with a stub reader over the protocol-level arms.
@@ -735,7 +1177,7 @@ mod tests {
         json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
     }
 
-    fn no_tools(_name: &str, _args: &Value) -> Option<Value> {
+    fn no_tools(_name: &str, _args: &Value) -> Option<ToolOutcome> {
         None
     }
 
@@ -766,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_exposes_the_three_debug_tools() {
+    fn tools_list_exposes_the_read_and_action_tools() {
         let reply = mcp_message(&no_tools, request("tools/list", json!({})), None);
         let body: Value = serde_json::from_str(&reply.body).unwrap();
         let names: Vec<&str> = body["result"]["tools"]
@@ -775,13 +1217,26 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["readest_state", "readest_logs", "readest_events"]);
+        assert_eq!(
+            names,
+            [
+                "readest_state",
+                "readest_logs",
+                "readest_events",
+                "readest_open_book",
+                "readest_goto",
+                "readest_reload",
+                "readest_screenshot",
+            ]
+        );
     }
 
     #[test]
-    fn tools_call_wraps_the_read_result_as_text_content() {
+    fn tools_call_passes_the_tool_result_through() {
         let reader = |name: &str, args: &Value| match name {
-            "readest_logs" => Some(json!({"entries": [], "n": args["n"]})),
+            "readest_logs" => Some(ToolOutcome::Ready(text_result(
+                json!({"entries": [], "n": args["n"]}),
+            ))),
             _ => None,
         };
         let reply = mcp_message(
@@ -798,6 +1253,32 @@ mod tests {
             body["result"]["content"][0]["text"],
             r#"{"entries":[],"n":5}"#
         );
+        assert!(reply.deferred.is_none());
+    }
+
+    #[test]
+    fn a_deferred_tool_call_hands_the_plan_to_the_caller() {
+        let reader = |name: &str, _args: &Value| match name {
+            "readest_goto" => Some(ToolOutcome::Deferred(Plan::Frontend {
+                labels: vec!["reader-1".to_string()],
+                action: json!({"kind": "goto", "cfi": "epubcfi(/6/4)"}),
+            })),
+            _ => None,
+        };
+        let reply = mcp_message(
+            &reader,
+            request("tools/call", json!({"name": "readest_goto"})),
+            None,
+        );
+        let deferred = reply.deferred.expect("deferred plan");
+        assert_eq!(deferred.id, 1);
+        match deferred.plan {
+            Plan::Frontend { labels, action } => {
+                assert_eq!(labels, ["reader-1"]);
+                assert_eq!(action["kind"], "goto");
+            }
+            Plan::Screenshot { .. } => panic!("wrong plan"),
+        }
     }
 
     #[test]

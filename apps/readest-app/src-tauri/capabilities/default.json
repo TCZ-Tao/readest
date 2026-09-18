@@ -245,6 +245,7 @@
     "allow-find-reader-window-with-book",
     "allow-debug-report-state",
     "allow-debug-console-log",
+    "allow-debug-action-result",
     "allow-debug-server-set-enabled",
     "allow-debug-server-status",
     "allow-localsend-start",

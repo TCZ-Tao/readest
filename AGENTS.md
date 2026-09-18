@@ -82,6 +82,7 @@ pnpm --filter @readest/readest-app setup-vendors   # 拷贝 pdf.js / simplecc / 
 
 - [apps/readest-app/AGENTS.md](apps/readest-app/AGENTS.md) — 应用级代理说明：源码布局、路径别名、测试策略、worktree 规则
 - [apps/readest-app/DESIGN.md](apps/readest-app/DESIGN.md) — UI/UX 设计系统规则
+- [docs/debug-mcp.zh-CN.md](docs/debug-mcp.zh-CN.md) — 调试 MCP：让 AI 观察并操作运行中的 app（仅桌面 debug 构建，也是加新调试工具的指南）
 - [docs/windows-android-setup.zh-CN.md](docs/windows-android-setup.zh-CN.md) — Windows + Android 环境搭建（含腾讯 Gradle 镜像配置；镜像只配在本机 `~/.gradle/init.d/`，**不要提交进仓库**）
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 上游贡献流程与构建前置条件
 

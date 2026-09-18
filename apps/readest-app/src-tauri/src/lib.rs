@@ -551,6 +551,8 @@ pub fn run() {
             #[cfg(all(debug_assertions, desktop))]
             debug_server::debug_console_log,
             #[cfg(all(debug_assertions, desktop))]
+            debug_server::debug_action_result,
+            #[cfg(all(debug_assertions, desktop))]
             debug_server::debug_server_set_enabled,
             #[cfg(all(debug_assertions, desktop))]
             debug_server::debug_server_status,

@@ -229,11 +229,12 @@ build (`kodev` in a KOReader checkout); nothing in CI needs it.
 
 ## Debug MCP (in-app, dev builds)
 
-Desktop debug builds compile a **read-only** debug HTTP server into the app
+Desktop debug builds compile a debug HTTP server into the app
 (`src-tauri/src/debug_server.rs`); release builds never contain it (the module is
 gated on `debug_assertions`, not on a cargo feature). It exposes state invisible
 from outside a running Tauri app, both as plain JSON endpoints and as an MCP
-server any MCP client can attach to.
+server any MCP client can attach to, plus a few *actions* so an AI can close the
+edit → reload → screenshot loop without a human in it.
 
 Turn it on in **Settings → Misc → Developer → "MCP Debug Server"** (persisted as
 `debugMcpEnabled` in `settings.json`; off by default, so normal dev runs open no
@@ -262,18 +263,58 @@ per-client registration script:
 | Endpoint              | Returns                                                                    |
 | --------------------- | -------------------------------------------------------------------------- |
 | `GET /health`         | pid, uptime, app version (also verifies the bearer token)                   |
-| `GET /state`          | window list (label/title/URL), books per reader window (`?ids=`), per-window JS snapshots (open books + live progress) |
+| `GET /state`          | window list (label/title/URL), books per reader window (`?ids=`), per-window JS snapshots (open books + live progress, the library's `{hash,title}` list, and `boot` — `performance.timeOrigin`, so a reload is visible as a boot change) |
 | `GET /logs?n=200`     | browser-console tail across all windows (labelled)                          |
 | `GET /events?since=0` | window lifecycle events (close_requested/destroyed/focused/blurred), incremental ids |
 | `POST /mcp`           | MCP Streamable HTTP: `initialize`, `notifications/initialized`, `tools/list`, `tools/call` (JSON-RPC 2.0; sessions via `Mcp-Session-Id`, `GET /mcp` keepalive stream, `DELETE /mcp` closes a session) |
 | `GET /mcp`            | `text/event-stream` keepalive for clients that open the server→client stream |
 
-The MCP tools are `readest_state`, `readest_logs {n}`, `readest_events {since}` —
-the same three payloads as the JSON endpoints.
+The state tools are `readest_state`, `readest_logs {n}`, `readest_events {since}`
+— the same three payloads as the JSON endpoints.
+
+### Action tools
+
+| Tool                          | Does                                                            |
+| ----------------------------- | --------------------------------------------------------------- |
+| `readest_open_book {hashes}`  | Focus the reader window that already holds a single hash, else open one (the window appears asynchronously — poll `readest_state`) |
+| `readest_goto {window, hash?, cfi?, page?}` | Move that reader window's view to a CFI/href or a 1-based page (the footer's own page-input path — `pageinfo` is section-local on reflowable books, so pass `cfi` when the exact spot matters) |
+| `readest_reload {window?}`    | Reload that window, or every window when `window` is omitted    |
+| `readest_screenshot {window}` | PNG of the window's rendered content, as MCP image content      |
+
+Rust sends each action to the named webview as a `debug://action` event
+(served by `src/services/debugReport.ts`), the window runs it and reports back
+through `debug_action_result`; a window that never answers times out instead of
+hanging the tool call. Reload goes through the app's own `beforereload` chain so
+reading positions are saved first, and `readest_open_book` / `readest_goto` reuse
+`showReaderWindow` / `focusExistingReaderWindow` and the reader's own `view.goTo`
+— the UI's code paths, not a parallel implementation of them.
+
+Two traps worth remembering when touching this wiring:
+
+- Tauri's `emit_to(label, …)` only narrows JS listeners that registered a label;
+  a default `listen()` targets `Any` and therefore receives events aimed at *any*
+  window, so `listenForActions` passes `{ target: getCurrentWindow().label }`.
+  Without it one `readest_open_book` runs in every open window.
+- Registration is guarded both in module state and on `window`, because a
+  StrictMode double effect or a Fast Refresh re-run otherwise adds a second
+  action listener — and one dispatch would then open a window per listener.
+
+`readest_screenshot` is Windows-only: it calls WebView2's
+`ICoreWebView2::CapturePreview` through `with_webview`, because WebView2 renders
+through DirectComposition and OS-level window capture returns a blank client
+area. On other platforms the tool reports that it is unsupported.
 
 Verified against the official SDK client (`pnpm exec node scripts/mcp-parity.mjs
-<token>` while the app runs with the server on): initialize/tools-list/three tool
-calls plus a wrong-token rejection.
+<token>` while the app runs with the server on): initialize/tools-list/three
+state tool calls, the action tools' argument errors, one PNG screenshot, plus a
+wrong-token rejection. The action tools themselves were driven live once:
+`readest_open_book` added exactly one reader window, `readest_goto` moved the
+view (fraction and CFI both changed), `readest_reload` changed the window's
+`boot`, and a one-line style edit plus reload produced a different screenshot
+byte-for-byte.
+
+The Chinese companion doc — mechanism, how to add a tool, troubleshooting, and the
+boundaries this channel deliberately keeps — is [docs/debug-mcp.zh-CN.md](../../docs/debug-mcp.zh-CN.md).
 
 ### Driving the UI on Windows
 
