@@ -278,11 +278,11 @@ than from Rust, so they ride the action channel below without changing anything:
 each open book's merged overrides — deliberately only `ViewSettings`, never
 `SystemSettings`, which holds credentials), `readest_toc {window, hash?}` (the
 parsed TOC: `label`/`href`/`cfi` per entry, plus the 1-based `page` on
-fixed-layout books, truncated at 300 entries) and `readest_search {window, hash?,
-query, limit?}` (literal case-insensitive matches over the live book DOM, each with
-its CFI and an excerpt — no search index, so a long book takes seconds and Rust
-allows 30s; it clears the previous search highlights the way the in-app search
-does, and its own before returning).
+fixed-layout books, truncated at 300 entries) and `readest_search {window, hash?, query, limit?, scope?, mode?, matchCase?}` (the
+app's own indexed search — the search UI's path, so the first search over a book
+builds its index and later ones read the cache; each returned match carries its
+CFI and excerpt, `total` counts every match in the scope, and nothing is
+highlighted; Rust allows 30s, mostly for that first index build).
 
 ### Action tools
 
@@ -298,7 +298,7 @@ does, and its own before returning).
 | `readest_screenshot {window, wait_for_stable?}` | PNG of the window's rendered content, as MCP image content, plus a text part with the frame's `sha256`, byte count, and pixel/CSS size — equal hashes mean "nothing changed on screen". `wait_for_stable` waits for the window's JS, then keeps capturing until two consecutive frames are identical (~8s cap), so a post-reload shot is not a half-loaded frame |
 | `readest_settings {window}`   | Read-only: the view settings actually in effect (global defaults + each open book's merged overrides) |
 | `readest_toc {window, hash?}` | Read-only: the parsed TOC with `label`/`href`/`cfi` (and `page` on fixed-layout books), both of which `readest_goto` accepts |
-| `readest_search {window, hash?, query, limit?}` | Read-only: literal, case-insensitive text search over the open book, returning each match's CFI and excerpt |
+| `readest_search {window, hash?, query, limit?, scope?, mode?, matchCase?}` | Read-only: text search through the app's own indexed search path (the search UI's route; the first search over a book builds its index, later ones read the cache). Returns the first `limit` matches as CFI + excerpt, plus `total` — the exact match count in the scope — so a caller can tell when `limit` cut the list. `scope: 'section'` restricts to the displayed section; `mode` is `contains`/`whole-words`/`regex`/`nearby-words`; `matchCase` makes it case-sensitive. Nothing is highlighted |
 
 Rust sends each action to the named webview as a `debug://action` event
 (served by `src/services/debugReport.ts`), the window runs it and reports back

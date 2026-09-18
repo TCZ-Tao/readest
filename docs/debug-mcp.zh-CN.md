@@ -53,7 +53,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_events` | `{since}` 默认 0 | `{events:[{id, event, label, ts}]}` |
 | `readest_settings` | `{window}` 必填 | `{global, books:[{hash, settings}]}`：该窗口**当前生效**的阅读设置 |
 | `readest_toc` | `{window, hash?}`，`window` 必填 | `{book, entries:[{label, href, cfi, page?, subitems?}], truncated}` |
-| `readest_search` | `{window, hash?, query, limit?}`，`window`/`query` 必填 | `{book, query, matches:[{cfi, chapter, excerpt}], truncated}` |
+| `readest_search` | `{window, hash?, query, limit?, scope?, mode?, matchCase?}`，`window`/`query` 必填 | `{book, query, matches:[{cfi, chapter, excerpt}], total, truncated}`；`total` 是搜索范围内命中总数，`truncated` 表示返回数 < 总数 |
 
 后三个也是**只读**的，但答案在窗口里（解析好的目录、活的 DOM、合并后的设置），所以和动作工具走同一条
 通道（§6）：Rust 派发到指定窗口，窗口回报。
@@ -65,10 +65,13 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 - **`readest_toc` 的 `cfi` 是目录项自己烘好的**（`hydrateBookNav` → `bakeLocationsAndCfis`），`href` 是
   侧栏点击用的那个，两者都能直接喂给 `readest_goto`。固定版式（PDF）多一个 `page`，就是页脚那个页码。
   超过 300 项会截断并置 `truncated`。
-- **`readest_search` 直读活 DOM，不走索引**：`view.search` 逐节解析并匹配，所以长书可能要几秒到几十秒
-  ——`limit`（默认 20、上限 100）一凑够就停，Rust 给这条派发的 deadline 是 30 秒（其余动作 10 秒）。
-  每条命中都带现成的 CFI（foliate 在匹配时就 `getCFI` 了），拿去 `readest_goto` 即可。代价是它会像
-  UI 里发起搜索那样**先清掉上一次的搜索高亮**；自己加的高亮在返回前也清掉了。
+- **`readest_search` 走 app 自己的索引搜索**（`librarySearchService` + `searchWorker`，UI 搜索的同一条
+  路）：locator 是文本偏移，返回前用 `resolveSearchResultCfis` 逐节换成 CFI。代价是**首次**对一本书搜索
+  会先建索引（整本逐节提取文本，之后缓存在每本书的 `search.db` 里，书没变就不再重建）——所以第一次
+  慢、后面快；Rust 给这条派发的 30 秒 deadline 主要是给建索引的。`limit` 只限制返回条数，总数照算，
+  `total` 因此是精确值。`scope:'section'` 只搜当前显示的节；`mode` 支持 `contains`/`whole-words`/
+  `regex`/`nearby-words`（整词、正则、邻近词；邻近词至少要两个词，正则非法直接报错）；`matchCase`
+  大小写敏感。整个过程不往书里画高亮，UI 里已有的搜索高亮也不动。
 
 `readest_logs` 的四个过滤项都可选、**与关系**，用来切掉跨窗口噪音（HMR 的 `[Fast Refresh] done in 148ms`、
 别人窗口的日志）：
@@ -233,8 +236,7 @@ node scripts/mcp-parity.mjs <token>                # 起 app 后跑，38 项协�
 - 不做**破坏性操作**：文件导入/删除、书库修改、设置写入
 - `readest_settings` 只返回**视图设置**（主题/字号/布局…），不含 `SystemSettings`：那里面有同步凭据与
   PIN 哈希，调试通道不把这些吐给客户端
-- `readest_search` 复用 `view.search`，因此和 UI 里发起搜索一样会先清掉上一次的搜索高亮（它自己加的
-  高亮在返回前清掉，CFI 不受影响）
+- `readest_search` 走 UI 的索引搜索路径但**不画任何高亮**；UI 里已经打开的搜索结果和高亮不受影响
 - `readest_click` / `readest_press` 是通用的 UI 驱动：delete、remove 这类入口（包括二次确认）也在可达范围内，工具不判断点的是什么，调用方自己负责。上一条限制约束的是工具自己主动做的事（比如没有「删书」工具），不是这条通道能碰到什么
 - 不做**多步编排**：一次调用只做一件事，串起来由 AI 自己决定
 - **Android 不支持**：该 fork 的另一目标平台没有桌面窗口模型，本期不覆盖
@@ -251,7 +253,7 @@ node scripts/mcp-parity.mjs <token>                # 起 app 后跑，38 项协�
 | 某动作 10 秒超时 | 目标窗口没响应：窗口已销毁、前端抛错、或页面加载失败。事件每秒重发一次，所以刚创建/刚重载的窗口不会因此丢动作 |
 | `timed out after 8000ms waiting for ...` | 前端等 `goto`/`open_book` 的封顶时间还不就绪：书一直没加载完（可能加载失败），或窗口始终没出现。等更久请先 `readest_wait {timeout_ms}` |
 | `timed out after <你的 timeout_ms>ms waiting for ...` | `readest_wait` 自己到点了；`timeout_ms` 越大等得越久（上限 60000） |
-| `readest_search` 30 秒超时 | 书大而命中少：它逐节扫活的 DOM、没有索引，只在凑满 `limit` 时提前停。换更可能出现在正文里的词，或先用 `readest_toc` 把范围缩到某一章再按 `cfi` 跳过去 |
+| `readest_search` 30 秒超时 | 多半是首次对这本书搜索：要先逐节提取整本建索引，书越大越慢（之后走缓存，明显快）。仍超时就换更可能出现在正文里的词，或先用 `readest_toc` 把范围缩到某一章再按 `cfi` 跳过去 |
 | `book <hash> is not open in this window` / `... is not a reader route` | 目标窗口确实不是阅读窗口（比如 `main`），或没开这本书（多书窗口请带 `hash`）——立刻返回，不是「还没好」。`readest_toc` / `readest_search` / `readest_settings` 有同样的报错 |
 | `book ... failed to load` | 这本书加载失败（`viewState.error`），与 app 自己的就绪判据一致，不会白等 8 秒 |
 | 一个动作在多个窗口各执行一次 | 监听器被重复注册或没做窗口限定，见 §6 |

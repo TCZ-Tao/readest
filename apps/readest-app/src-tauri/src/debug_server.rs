@@ -71,10 +71,10 @@ const STABLE_GAP: Duration = Duration::from_millis(400);
 /// A wait handed to the window before a stable capture, so a document that is
 /// still mounting does not compare equal to itself while blank.
 const STABLE_READY_TIMEOUT: Duration = Duration::from_secs(6);
-/// `readest_search` walks the live book DOM section by section — no search index,
-/// so a long book takes seconds where the in-app search UI (an indexed worker)
-/// would take one. It stops at the caller's `limit`, and a caller who asked for
-/// something the book does not contain pays for the walk; hence the longer
+/// `readest_search` runs the app's own indexed search in the window (the same
+/// path the search UI uses). A first search over a book builds the index —
+/// the whole file is extracted section by section — so the first call, or a
+/// search right after the book changed, pays for that; hence the longer
 /// dispatch deadline, in the same spirit as `readest_wait`.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const SEARCH_DEFAULT_LIMIT: u64 = 20;
@@ -963,14 +963,17 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_search",
-            "description": "Search the open book's text and return each match's CFI with a short excerpt, so a passage can be found by content and then reached with readest_goto (`matches[].cfi`). Scans the live book without a search index, so a long book can take seconds; `limit` stops it once enough matches are found, and the search highlights are cleared again before returning.",
+            "description": "Search the open book's text and return each match's CFI with a short excerpt, so a passage can be found by content and then reached with readest_goto (`matches[].cfi`). Runs the app's own indexed search (the same path the search UI uses): the first search over a book builds its index, later ones read the cached text. `total` is the exact number of matches in the searched scope, so an AI can tell whether `limit` cut the list short. Nothing is highlighted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "window": {"type": "string", "description": "Reader window label from readest_state."},
                     "hash": {"type": "string", "description": "Which book to search, when the window has several open (default: the first one)."},
-                    "query": {"type": "string", "minLength": 1, "description": "Text to look for (literal substring, case-insensitive)."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Stop after this many matches (default 20)."}
+                    "query": {"type": "string", "minLength": 1, "description": "Text to look for (literal substring, case-insensitive by default)."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "How many matches to return (default 20); everything is counted regardless, so `total` is exact."},
+                    "scope": {"type": "string", "enum": ["book", "section"], "description": "'book' (default) or 'section': only the book's currently displayed section."},
+                    "mode": {"type": "string", "enum": ["contains", "whole-words", "regex", "nearby-words"], "description": "'contains' (default), 'whole-words', 'regex' (the query is a regular expression), or 'nearby-words' (all query words within a few words of each other; needs at least two words)."},
+                    "matchCase": {"type": "boolean", "description": "Case-sensitive matching (default false)."}
                 },
                 "required": ["window", "query"],
                 "additionalProperties": false
@@ -1179,6 +1182,21 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "query is required: pass the text to look for",
                 )));
             };
+            let scope = args.get("scope").and_then(Value::as_str).unwrap_or("book");
+            if !matches!(scope, "book" | "section") {
+                return Some(ToolOutcome::Ready(error_result(
+                    "scope must be 'book' or 'section' (the book's currently displayed section)",
+                )));
+            }
+            let mode = args
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("contains");
+            if !matches!(mode, "contains" | "whole-words" | "regex" | "nearby-words") {
+                return Some(ToolOutcome::Ready(error_result(
+                    "mode must be 'contains', 'whole-words', 'regex', or 'nearby-words'",
+                )));
+            }
             if let Some(error) = check(label) {
                 return Some(error);
             }
@@ -1194,6 +1212,10 @@ fn tool_outcome(app: &AppHandle, name: &str, args: &Value) -> Option<ToolOutcome
                     "hash": args.get("hash"),
                     "query": query,
                     "limit": limit,
+                    "scope": scope,
+                    "mode": mode,
+                    // camelCase: the payload is read by src/services/debugReport.ts.
+                    "matchCase": args.get("matchCase").and_then(Value::as_bool).unwrap_or(false),
                 }),
                 timeout: SEARCH_TIMEOUT,
             }))

@@ -229,9 +229,14 @@ const query = /[A-Za-z]{4,}/.exec(outlined?.report?.entries?.[0]?.label ?? '')?.
 if (reader && query) {
   const found = await report('readest_search', { window: reader, query, limit: 5 });
   check(
-    found?.ok === true && (found.matches?.length ?? 0) > 0 && !!found.matches[0]?.cfi,
-    `readest_search ${reader} for "${query}" returns CFIs`,
-    `${found?.matches?.length ?? 0} matches${found?.matches?.[0]?.cfi ? `, first ${found.matches[0].cfi}` : ''}`,
+    found?.ok === true &&
+      (found.matches?.length ?? 0) > 0 &&
+      !!found.matches[0]?.cfi &&
+      found.total >= found.matches.length,
+    `readest_search ${reader} for "${query}" returns CFIs and a total`,
+    `${found?.matches?.length ?? 0} of ${found?.total ?? '?'} matches${
+      found?.matches?.[0]?.cfi ? `, first ${found.matches[0].cfi}` : ''
+    }`,
   );
 } else {
   console.log('skip readest_search: no open book has a chapter label to search for');

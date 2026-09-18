@@ -16,7 +16,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { TOCItem } from '@/libs/document';
-import type { SearchExcerpt } from '@/types/book';
+import type { SearchExcerpt, SearchResultLocator } from '@/types/book';
+import {
+  createLibrarySearchSession,
+  resolveSearchResultCfis,
+  searchLibraryBooks,
+} from '@/services/librarySearchService';
 import envConfig, { isTauriAppPlatform } from '@/services/environment';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
@@ -224,6 +229,9 @@ interface DebugAction {
   modifiers?: string[];
   query?: string;
   limit?: number;
+  scope?: 'book' | 'section';
+  mode?: 'contains' | 'whole-words' | 'regex' | 'nearby-words';
+  matchCase?: boolean;
 }
 
 /// An action's report, plus work that must not start until Rust has it: a
@@ -519,42 +527,87 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
       return { result: { ok: true, book: key, entries, truncated: budget.dropped } };
     }
     case 'search': {
+      // The app's own indexed search (librarySearchService + searchWorker) —
+      // the path the search UI runs: first search over a book builds its
+      // index, later ones read the cached text. Locators come back as
+      // text offsets and are resolved to CFIs section by section, exactly
+      // like the search list does. Nothing is painted into the book.
       const key = await waitForBookKey(action.hash);
-      const view = await waitForView(key);
+      await waitForView(key);
+      const hash = key.split('-')[0]!;
+      const book = useLibraryStore.getState().getBookByHash(hash);
+      if (!book) return fail(`book ${hash} is not in this window's library store`);
       const limit = action.limit ?? 20;
-      const matches: { cfi: string; chapter: string; excerpt: SearchExcerpt }[] = [];
+      // progress is what scopes a 'section' search (the same fallback the
+      // search UI makes: no relocate yet → the whole book).
+      const sectionIndex =
+        action.scope === 'section' ? getBookProgress(key)?.section.current : undefined;
+      const appService = await envConfig.getAppService();
+      // A session per call: it caches the open book and index handle, and
+      // closes them right after, so this never holds the book file.
+      const session = createLibrarySearchSession(appService);
       try {
-        // Book scope over the live DOM: no index, no worker, but each match
-        // comes back as a CFI already (`#toSearchMatch`), which is the point.
-        for await (const item of view.search({
-          scope: 'book',
-          mode: 'contains',
-          matchCase: false,
-          matchDiacritics: false,
-          query: action.query!,
+        const sections: {
+          label: string;
+          subitems: { locator: SearchResultLocator; excerpt: SearchExcerpt }[];
+        }[] = [];
+        for await (const event of searchLibraryBooks(appService, [book], action.query!, {
+          config: {
+            scope: 'book',
+            mode: action.mode ?? 'contains',
+            matchCase: !!action.matchCase,
+            matchDiacritics: false,
+          },
+          session,
+          sectionIndex,
+          // No per-book cap: the caller's `limit` is about the reply, while
+          // `total` should be exact.
+          maxResultsPerBook: Infinity,
         })) {
-          // The only string this generator yields is 'done'.
-          if (typeof item === 'string') break;
-          for (const match of item.subitems ?? []) {
-            if (matches.length >= limit) break;
-            matches.push({ cfi: match.cfi, chapter: item.label, excerpt: match.excerpt });
+          if (event.type === 'result') sections.push(event.result);
+          else if (event.type === 'book-error') {
+            const code = event.code ? ` (${event.code})` : '';
+            return fail(`${event.error}${code}`);
+          } else if (event.type === 'book-skipped') {
+            return fail('the book file is not available for searching');
           }
-          if (matches.length >= limit) break;
         }
+        const total = sections.reduce((n, section) => n + section.subitems.length, 0);
+        const all = sections.flatMap((section) =>
+          section.subitems.map(({ locator, excerpt }) => ({
+            locator,
+            excerpt,
+            chapter: section.label,
+          })),
+        );
+        // CFI resolution re-extracts the matched sections — the expensive
+        // half — so only the matches that are actually returned pay for it.
+        const returned = all.slice(0, limit);
+        const resolved = await resolveSearchResultCfis(
+          session,
+          book,
+          returned.map(({ locator }) => locator),
+        );
+        const matches = returned
+          .map((match, index) => ({
+            cfi: resolved[index]?.cfi ?? '',
+            chapter: match.chapter,
+            excerpt: match.excerpt,
+          }))
+          .filter((match) => match.cfi);
+        return {
+          result: {
+            ok: true,
+            book: key,
+            query: action.query,
+            matches,
+            total,
+            truncated: matches.length < total,
+          },
+        };
       } finally {
-        // `view.search` paints its matches into the book as highlights. A read
-        // must leave the window as it found it — the CFIs survive the clear.
-        view.clearSearch();
+        await session.close();
       }
-      return {
-        result: {
-          ok: true,
-          book: key,
-          query: action.query,
-          matches,
-          truncated: matches.length >= limit,
-        },
-      };
     }
     case 'click': {
       // Either a selector (window document first, then the book's own
