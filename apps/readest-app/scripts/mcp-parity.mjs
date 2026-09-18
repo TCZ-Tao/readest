@@ -220,12 +220,18 @@ check(
   tocs.map((entry) => `${entry.label}: ${entry.report?.entries?.length ?? 'error'} entries`).join('; ') ||
     'no reader window with an open book',
 );
-// A book without a document outline (some PDFs) legitimately answers with none,
-// so take the deepest TOC any open book has, and its own chapter name as the
-// search query — otherwise a zero-match reply would be a real failure.
-const outlined = tocs.find((entry) => entry.report?.entries?.length) ?? tocs[0];
+// A book without a document outline (some PDFs) legitimately answers with page
+// or section fallback anchors, so take the deepest *real* TOC any open book has,
+// and its own chapter name as the search query — otherwise a zero-match reply
+// would be a real failure.
+const outlined =
+  tocs.find((entry) => entry.report?.source === 'toc' && entry.report?.entries?.length) ??
+  tocs.find((entry) => entry.report?.entries?.length);
 const reader = outlined?.label;
-const query = /[A-Za-z]{4,}/.exec(outlined?.report?.entries?.[0]?.label ?? '')?.[0];
+const query =
+  outlined?.report?.source === 'toc'
+    ? /[A-Za-z]{4,}/.exec(outlined?.report?.entries?.[0]?.label ?? '')?.[0]
+    : undefined;
 if (reader && query) {
   const found = await report('readest_search', { window: reader, query, limit: 5 });
   check(

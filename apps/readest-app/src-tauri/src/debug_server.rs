@@ -950,7 +950,7 @@ fn tool_catalog() -> Value {
         },
         {
             "name": "readest_toc",
-            "description": "The open book's table of contents, nested: label, href and CFI per entry, so an entry can be handed straight to readest_goto. Fixed-layout books additionally carry `page`, the footer's page number. Truncated at 300 entries (`truncated: true`).",
+            "description": "The open book's table of contents, nested: label, href and CFI per entry, so an entry can be handed straight to readest_goto. Fixed-layout books additionally carry `page`, the footer's page number. A book without an outline falls back to its own page list (`source: 'page-list'`) or bare per-section anchors (`source: 'sections'`, labeled `Page N` on fixed layout) — `source: 'toc'` is the real outline. Truncated at 300 entries (`truncated: true`).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

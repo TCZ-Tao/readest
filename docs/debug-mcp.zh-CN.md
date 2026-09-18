@@ -52,7 +52,7 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
 | `readest_logs` | `{n}` 默认 200，另可选 `since` / `window` / `level` / `grep` | `{entries:[{label, level, text, ts}], matched, total}` |
 | `readest_events` | `{since}` 默认 0 | `{events:[{id, event, label, ts}]}` |
 | `readest_settings` | `{window}` 必填 | `{global, books:[{hash, settings}]}`：该窗口**当前生效**的阅读设置 |
-| `readest_toc` | `{window, hash?}`，`window` 必填 | `{book, entries:[{label, href, cfi, page?, subitems?}], truncated}` |
+| `readest_toc` | `{window, hash?}`，`window` 必填 | `{book, source, entries:[{label, href, cfi, page?, subitems?}], truncated}`；`source: 'toc'` 是真目录，无目录的书退回 `'page-list'`（书自己的页码表）或 `'sections'`（逐节锚点，固定版式标成 `Page N`） |
 | `readest_search` | `{window, hash?, query, limit?, scope?, mode?, matchCase?}`，`window`/`query` 必填 | `{book, query, matches:[{cfi, chapter, excerpt}], total, truncated}`；`total` 是搜索范围内命中总数，`truncated` 表示返回数 < 总数 |
 
 后三个也是**只读**的，但答案在窗口里（解析好的目录、活的 DOM、合并后的设置），所以和动作工具走同一条
@@ -64,6 +64,8 @@ JSON 接口和 MCP 工具，并且提供一组动作与定位工具（开书、�
   `SystemSettings` 不在其中，因为那里面有 KOSync/Readwise/S3 的凭据和 PIN 哈希。
 - **`readest_toc` 的 `cfi` 是目录项自己烘好的**（`hydrateBookNav` → `bakeLocationsAndCfis`），`href` 是
   侧栏点击用的那个，两者都能直接喂给 `readest_goto`。固定版式（PDF）多一个 `page`，就是页脚那个页码。
+  书没有 outline 时不再返回 0 项：先退回 `bookDoc.pageList`（PDF 自己的页码表，`href` 同样可跳），
+  再退回逐节锚点（固定版式即 `Page N`）——reply 的 `source` 标明这次给的是哪一档。
   超过 300 项会截断并置 `truncated`。
 - **`readest_search` 走 app 自己的索引搜索**（`librarySearchService` + `searchWorker`，UI 搜索的同一条
   路）：locator 是文本偏移，返回前用 `resolveSearchResultCfis` 逐节换成 CFI。代价是**首次**对一本书搜索

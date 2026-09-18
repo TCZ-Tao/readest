@@ -550,12 +550,56 @@ const runDebugAction = async (action: DebugAction): Promise<ActionOutcome> => {
     case 'toc': {
       const key = await waitForBookKey(action.hash);
       await waitForView(key);
+      const bookData = useBookDataStore.getState().getBookData(key);
+      const bookDoc = bookData?.bookDoc;
+      const isFixedLayout = !!bookData?.isFixedLayout;
       // bookDoc.toc is the nav the reader itself navigates by: each item's cfi
       // is baked there (hydrateBookNav), and href is what the sidebar passes on.
-      const bookData = useBookDataStore.getState().getBookData(key);
-      const budget = { left: MAX_TOC_ITEMS, dropped: false };
-      const entries = tocEntries(bookData?.bookDoc?.toc ?? [], !!bookData?.isFixedLayout, budget);
-      return { result: { ok: true, book: key, entries, truncated: budget.dropped } };
+      if (bookDoc?.toc?.length) {
+        const budget = { left: MAX_TOC_ITEMS, dropped: false };
+        const entries = tocEntries(bookDoc.toc, isFixedLayout, budget);
+        return {
+          result: { ok: true, book: key, source: 'toc', entries, truncated: budget.dropped },
+        };
+      }
+      // No outline: the book's own page list (a PDF's printed page numbers, an
+      // EPUB page-map) still names real places — `href` is resolvable by
+      // readest_goto, `page` is the 1-based fixed-layout page.
+      if (bookDoc?.pageList?.length) {
+        const entries = bookDoc.pageList.slice(0, MAX_TOC_ITEMS).map((item) => ({
+          label: item.label,
+          href: item.href,
+          ...(isFixedLayout && typeof item.index === 'number' ? { page: item.index + 1 } : {}),
+        }));
+        return {
+          result: {
+            ok: true,
+            book: key,
+            source: 'page-list',
+            entries,
+            truncated: bookDoc.pageList.length > MAX_TOC_ITEMS,
+          },
+        };
+      }
+      // Last resort — bare anchors, one per section, so "go somewhere specific"
+      // always has something to aim at. Fixed layout (a PDF with no outline and
+      // no page labels) reads as one entry per page.
+      const sections = bookDoc?.sections ?? [];
+      const entries = sections.slice(0, MAX_TOC_ITEMS).map((section, index) => ({
+        label: isFixedLayout ? `Page ${index + 1}` : `Section ${index + 1}`,
+        ...(section.href ? { href: section.href } : {}),
+        ...(section.cfi ? { cfi: section.cfi } : {}),
+        ...(isFixedLayout ? { page: index + 1 } : {}),
+      }));
+      return {
+        result: {
+          ok: true,
+          book: key,
+          source: 'sections',
+          entries,
+          truncated: sections.length > MAX_TOC_ITEMS,
+        },
+      };
     }
     case 'search': {
       // The app's own indexed search (librarySearchService + searchWorker) —
