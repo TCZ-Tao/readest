@@ -13,6 +13,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { eventDispatcher } from '@/utils/event';
 import { useTextTranslation } from '../../hooks/useTextTranslation';
 import TOCEditView from './TOCEditView';
+import BookContextMenuPopup from '@/app/library/components/BookContextMenuPopup';
 import {
   buildTOCDisplayItems,
   CurrentPositionRow,
@@ -21,7 +22,7 @@ import {
   StaticListRow,
 } from './TOCItem';
 import { computeExpandedSet, getItemIdentifier } from './tocTree';
-import { ensureTocIds } from './tocEditTree';
+import { ensureTocIds, flattenTocForEdit, renameTocItem } from './tocEditTree';
 
 const flattenTOC = (items: TOCItem[], expandedItems: Set<string>, depth = 0): FlatTOCItem[] => {
   const result: FlatTOCItem[] = [];
@@ -39,6 +40,57 @@ const setsHaveSameContents = (a: Set<string>, b: Set<string>): boolean => {
   if (a.size !== b.size) return false;
   for (const item of a) if (!b.has(item)) return false;
   return true;
+};
+
+// In-place rename row rendered inside the read-only (non-edit-mode) list when
+// the user picks "Rename" from a TOC item's context menu. Commit on blur or
+// Enter, cancel on Escape — same contract as the edit-mode rename input.
+const TocRenameRow: React.FC<{
+  item: TOCItem;
+  depth: number;
+  onSubmit: (label: string) => void;
+}> = ({ item, depth, onSubmit }) => {
+  const cancelledRef = useRef(false);
+
+  const commitRename = useCallback(
+    (event: React.FocusEvent<HTMLInputElement>) => {
+      if (cancelledRef.current) {
+        cancelledRef.current = false;
+        return;
+      }
+      const label = event.target.value.trim();
+      if (label && label !== item.label) onSubmit(label);
+    },
+    [item.label, onSubmit],
+  );
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      event.currentTarget.blur();
+    } else if (event.key === 'Escape') {
+      cancelledRef.current = true;
+      event.currentTarget.blur();
+    }
+  }, []);
+
+  return (
+    <div className='border-base-300 w-full border-b pe-4 ps-2 pt-[1px] sm:border-none'>
+      <div
+        className='flex w-full items-center rounded-md py-4 sm:py-2'
+        style={{ paddingInlineStart: `${(depth + 1) * 12}px` }}
+      >
+        <input
+          autoFocus
+          defaultValue={item.label}
+          onBlur={commitRename}
+          onKeyDown={handleKeyDown}
+          className='input input-sm ms-2 min-w-0 flex-1'
+          aria-label={item.label}
+        />
+      </div>
+    </div>
+  );
 };
 
 const getInitialScrollTarget = (
@@ -71,6 +123,10 @@ const TOCView: React.FC<{
   const [containerHeight, setContainerHeight] = useState(400);
   const [editing, setEditing] = useState(false);
   const [editToc, setEditToc] = useState<TOCItem[] | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: TOCItem } | null>(
+    null,
+  );
+  const [renamingId, setRenamingId] = useState<TOCItem['id'] | null>(null);
 
   // Persist an edited tree: refresh bookDoc.toc (drives this panel and the
   // annotation/bookmark section labels) and write the override file that
@@ -102,6 +158,32 @@ const TOCView: React.FC<{
     setEditToc(ensureTocIds(toc));
     setEditing(true);
   }, [toc]);
+
+  // Context-menu rename. The read-only tree may carry no ids yet (the book was
+  // never edited), so stamp them first — persisting that id-only change — and
+  // address the node by its flat position, which ensureTocIds preserves.
+  const startRename = useCallback(
+    (item: TOCItem) => {
+      const rows = flattenTocForEdit(toc);
+      const idx = rows.findIndex((row) => row.item === item);
+      if (idx === -1) return;
+      let target = toc;
+      if (!rows.every((row) => typeof row.item.id === 'number')) {
+        target = ensureTocIds(toc);
+        commitToc(target);
+      }
+      setRenamingId(flattenTocForEdit(target)[idx]!.item.id);
+    },
+    [toc, commitToc],
+  );
+
+  const handleRenamed = useCallback(
+    (label: string) => {
+      if (renamingId !== null) commitToc(renameTocItem(toc, renamingId, label));
+      setRenamingId(null);
+    },
+    [renamingId, toc, commitToc],
+  );
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
@@ -393,19 +475,45 @@ const TOCView: React.FC<{
                   />
                 );
               }
+              if (isPdf && row.item.id === renamingId) {
+                return <TocRenameRow item={row.item} depth={row.depth} onSubmit={handleRenamed} />;
+              }
               return (
-                <StaticListRow
-                  bookKey={bookKey}
-                  flatItem={row}
-                  activeHref={activeHref}
-                  onToggleExpand={handleToggleExpand}
-                  onItemClick={handleItemClick}
-                />
+                <div
+                  className='w-full'
+                  onContextMenu={
+                    isPdf
+                      ? (event) => {
+                          event.preventDefault();
+                          setContextMenu({
+                            x: event.clientX,
+                            y: event.clientY,
+                            item: row.item,
+                          });
+                        }
+                      : undefined
+                  }
+                >
+                  <StaticListRow
+                    bookKey={bookKey}
+                    flatItem={row}
+                    activeHref={activeHref}
+                    onToggleExpand={handleToggleExpand}
+                    onItemClick={handleItemClick}
+                  />
+                </div>
               );
             }}
             overscan={500}
           />
         </div>
+      )}
+      {contextMenu && (
+        <BookContextMenuPopup
+          position={{ x: contextMenu.x, y: contextMenu.y }}
+          items={[{ text: _('Rename'), action: () => startRename(contextMenu.item) }]}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   );

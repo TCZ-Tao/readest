@@ -58,6 +58,10 @@ vi.mock('@/store/bookDataStore', () => {
   };
 });
 
+// The read-only context menu reuses the bookshelf popup, whose ModalPortal
+// chain also drags in supabase; the menu is null unless right-clicked.
+vi.mock('@/app/library/components/BookContextMenuPopup', () => ({ default: () => null }));
+
 // Virtuoso is replaced with a stub that exposes a spy-able `scrollToIndex`
 // through the imperative handle and hands TOCView a scroller element.
 vi.mock('react-virtuoso', async () => {
