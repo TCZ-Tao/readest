@@ -80,6 +80,45 @@ describe('createWheelGestureDetector', () => {
     expect(flip!.deltaY).toBeGreaterThan(0);
   });
 
+  test('flips once per wheel notch so a fast multi-notch burst turns several pages', () => {
+    // Rolling a physical wheel quickly emits one ±100px event per detent,
+    // well inside the idle gap of the previous notch. Each notch is
+    // deliberate intent, so each one must flip — not just the first.
+    const detector = createWheelGestureDetector({ threshold: 30, idleResetMs: 200 });
+    let t = 0;
+    for (let i = 0; i < 5; i++) {
+      t += 16;
+      const flip = detector.feed(sample({ deltaY: 100, timeStamp: t }));
+      expect(flip).not.toBeNull();
+      expect(flip!.deltaY).toBe(100);
+      expect(flip!.deltaX).toBe(0);
+    }
+  });
+
+  test('swallows sub-notch momentum after a notch flip', () => {
+    const detector = createWheelGestureDetector({ threshold: 30, idleResetMs: 200 });
+    expect(detector.feed(sample({ deltaY: 100, timeStamp: 0 }))).not.toBeNull();
+    // Touch-surface momentum tail made of sub-notch events.
+    let t = 0;
+    for (let i = 0; i < 20; i++) {
+      t += 16;
+      expect(detector.feed(sample({ deltaY: 35, timeStamp: t }))).toBeNull();
+    }
+  });
+
+  test('a notch after an accumulated flip still flips immediately', () => {
+    const detector = createWheelGestureDetector({ threshold: 30, idleResetMs: 200 });
+    // Sub-notch stream crosses the threshold and latches the gesture...
+    expect(detector.feed(sample({ deltaX: 12, timeStamp: 0 }))).toBeNull();
+    expect(detector.feed(sample({ deltaX: 12, timeStamp: 16 }))).toBeNull();
+    expect(detector.feed(sample({ deltaX: 12, timeStamp: 32 }))).not.toBeNull();
+    // ...but a wheel notch is deliberate intent on its own and bypasses
+    // the latch (e.g. the user rolls the wheel right after a swipe).
+    const flip = detector.feed(sample({ deltaX: 100, timeStamp: 48 }));
+    expect(flip).not.toBeNull();
+    expect(flip!.deltaX).toBe(100);
+  });
+
   test('reset() clears accumulated travel', () => {
     const detector = createWheelGestureDetector({ threshold: 30 });
     detector.feed(sample({ deltaX: 20, timeStamp: 0 }));

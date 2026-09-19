@@ -34,7 +34,8 @@ export const useMouseEvent = (
   // Filters the raw wheel stream so a touch-surface mouse (e.g. Magic Mouse)
   // — which emits a flood of tiny events plus an inertial momentum tail for
   // one physical gesture — flips exactly one page instead of cascading
-  // through several. See wheelGesture.ts.
+  // through several. Discrete wheel-detent notches (single large-delta
+  // events) are exempt and flip one page per notch. See wheelGesture.ts.
   const wheelDetectorRef = useRef<ReturnType<typeof createWheelGestureDetector> | null>(null);
   if (!wheelDetectorRef.current) {
     wheelDetectorRef.current = createWheelGestureDetector();

@@ -7,11 +7,18 @@
 // Without filtering, every one of those events turns a page, so a single
 // touch cascades into several accidental page turns.
 //
-// This detector mirrors what native readers (e.g. Apple Books) do: it
-// accumulates wheel travel, only flips once the accumulated distance crosses
-// a deliberate-intent threshold, and then swallows the rest of the stream
-// (the momentum tail) until the wheel goes idle — so one gesture flips
-// exactly one page.
+// This detector mirrors what native readers (e.g. Apple Books) do for touch
+// surfaces: it accumulates wheel travel, only flips once the accumulated
+// distance crosses a deliberate-intent threshold, and then swallows the rest
+// of the stream (the momentum tail) until the wheel goes idle — so one
+// gesture flips exactly one page.
+//
+// A physical mouse wheel is different: every detent notch is one discrete
+// event carrying the full notch travel (typically ±100px). Each such event is
+// deliberate intent on its own, so it flips immediately and consecutive
+// notches keep flipping — rolling N notches turns N pages. The swallow-latch
+// only applies to sub-notch travel, which is what touch momentum tails are
+// made of.
 
 export interface WheelSample {
   deltaX: number;
@@ -30,6 +37,9 @@ export interface WheelFlipResult {
 export interface WheelGestureOptions {
   /** Accumulated normalized travel (px) required before a page turn fires. */
   threshold?: number;
+  /** Single-event normalized travel (px) that marks the event as a discrete
+   *  wheel-detent notch, which flips immediately without latching. */
+  notchThreshold?: number;
   /** Idle gap (ms) after which a gesture — including its momentum tail — is
    *  considered finished and the accumulators reset. */
   idleResetMs?: number;
@@ -40,12 +50,18 @@ export interface WheelGestureOptions {
 }
 
 const DEFAULT_THRESHOLD = 30;
+// Comfortably above per-event touchpad deltas, below the standard wheel
+// notch (±100px in Chromium pixel mode, ±3 lines = 120px normalized
+// elsewhere). A 1-line-per-notch OS setting (≈33px) falls back to the
+// accumulated-threshold path.
+const DEFAULT_NOTCH_THRESHOLD = 50;
 const DEFAULT_IDLE_RESET_MS = 200;
 const DEFAULT_LINE_HEIGHT = 40;
 const DEFAULT_PAGE_HEIGHT = 800;
 
 export const createWheelGestureDetector = (options: WheelGestureOptions = {}) => {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
+  const notchThreshold = options.notchThreshold ?? DEFAULT_NOTCH_THRESHOLD;
   const idleResetMs = options.idleResetMs ?? DEFAULT_IDLE_RESET_MS;
   const lineHeight = options.lineHeight ?? DEFAULT_LINE_HEIGHT;
   const pageHeight = options.pageHeight ?? DEFAULT_PAGE_HEIGHT;
@@ -74,11 +90,27 @@ export const createWheelGestureDetector = (options: WheelGestureOptions = {}) =>
     }
     lastTime = sample.timeStamp;
 
+    const normX = normalize(sample.deltaX, sample.deltaMode);
+    const normY = normalize(sample.deltaY, sample.deltaMode);
+
+    // A single event carrying a full wheel notch is a discrete detent: it is
+    // deliberate intent on its own, so flip on it directly and let the next
+    // notch flip again even inside the current gesture's window. Latching
+    // here still swallows any sub-notch momentum that follows.
+    if (Math.abs(normX) >= notchThreshold || Math.abs(normY) >= notchThreshold) {
+      accumX = 0;
+      accumY = 0;
+      flipped = true;
+      return Math.abs(normX) > Math.abs(normY)
+        ? { deltaX: normX, deltaY: 0 }
+        : { deltaX: 0, deltaY: normY };
+    }
+
     // Already flipped for this gesture: swallow the momentum tail.
     if (flipped) return null;
 
-    accumX += normalize(sample.deltaX, sample.deltaMode);
-    accumY += normalize(sample.deltaY, sample.deltaMode);
+    accumX += normX;
+    accumY += normY;
 
     if (Math.abs(accumX) < threshold && Math.abs(accumY) < threshold) {
       return null;
