@@ -313,6 +313,8 @@
   "Custom Reader UI CSS": "自定义界面 CSS",
   "Enter CSS for reader interface styling...": "输入阅读器界面样式的CSS…",
   "Crop": "裁剪",
+  "Crop Page Margins": "裁剪页边距",
+  "Drag the borders to crop the page": "拖动边框以裁剪页面",
   "Book Covers": "书籍封面",
   "Fit": "适应",
   "Reset {{settings}}": "重置{{settings}}",

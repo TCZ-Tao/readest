@@ -265,6 +265,17 @@ export interface BookLayout {
   autoScrollRunning: boolean;
 }
 
+/**
+ * PDF manual page crop: margins to cut away, as fractions (0-1) of the page
+ * size. `null` = uncropped. Stored per book in viewSettings.
+ */
+export interface PdfCropRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 export interface BookStyle {
   zoomLevel: number;
   paragraphMargin: number;
@@ -296,6 +307,7 @@ export interface BookStyle {
   invertImgColorInDark: boolean;
   applyThemeToPDF: boolean;
   contrast: number;
+  pdfCrop?: PdfCropRect | null;
 }
 
 export interface BookFont {

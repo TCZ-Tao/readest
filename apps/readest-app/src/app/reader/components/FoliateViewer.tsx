@@ -104,6 +104,7 @@ import Spinner from '@/components/Spinner';
 import KOSyncConflictResolver from './KOSyncResolver';
 import ImageViewer from './ImageViewer';
 import TableViewer from './TableViewer';
+import PdfCropOverlay from './PdfCropOverlay';
 import { getTTSMiniPlayerClearance } from '../utils/ttsMiniPlayerPosition';
 
 declare global {
@@ -152,6 +153,7 @@ const FoliateViewer: React.FC<{
   const doubleClickDisabled = useRef(!!viewSettings?.disableDoubleClick);
   const [toastMessage, setToastMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [cropMode, setCropMode] = useState(false);
   const [navigating, setNavigating] = useState(false);
   const navSpinnerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const librarySearchHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,6 +186,16 @@ const FoliateViewer: React.FC<{
     const timer = setTimeout(() => setToastMessage(''), 2000);
     return () => clearTimeout(timer);
   }, [toastMessage]);
+
+  useEffect(() => {
+    const openCropOverlay = (event: CustomEvent) => {
+      if ((event.detail as { bookKey?: string } | undefined)?.bookKey === bookKey) {
+        setCropMode(true);
+      }
+    };
+    eventDispatcher.on('pdf-crop-toggle', openCropOverlay);
+    return () => eventDispatcher.off('pdf-crop-toggle', openCropOverlay);
+  }, [bookKey]);
 
   useUICSS(bookKey);
   useProgressSync(bookKey);
@@ -728,6 +740,12 @@ const FoliateViewer: React.FC<{
         bookDoc.sections[0]!.pageSpread = viewSettings.keepCoverSpread ? '' : coverSide;
       }
 
+      // Apply the saved PDF page crop before opening, so pages load at the
+      // cropped size from the start. setCrop exists on PDF books only.
+      if (viewSettings.pdfCrop) {
+        bookDoc.setCrop?.(viewSettings.pdfCrop);
+      }
+
       await view.open(bookDoc);
       // make sure we can listen renderer events after opening book
       viewRef.current = view;
@@ -1137,6 +1155,9 @@ const FoliateViewer: React.FC<{
           isDarkMode={isDarkMode}
           onClose={() => setSelectedTableHtml(null)}
         />
+      )}
+      {bookData?.book?.format === 'PDF' && cropMode && (
+        <PdfCropOverlay bookKey={bookKey} onClose={() => setCropMode(false)} />
       )}
       <div
         ref={containerRef}

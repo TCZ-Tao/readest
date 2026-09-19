@@ -1,4 +1,4 @@
-import { BookFormat } from '@/types/book';
+import { BookFormat, PdfCropRect } from '@/types/book';
 import { Collection, Contributor, Identifier, LanguageMap } from '@/utils/book';
 import { configureZip } from '@/utils/zip';
 import { stripDuplicateMarker } from '@/utils/path';
@@ -130,6 +130,10 @@ export interface BookDoc {
   // book holds a pdf.js document whose dedicated worker survives GC, so
   // dropping the reference leaks the whole parsed file (#5387).
   destroy?(): void | Promise<void>;
+  // PDF only (makePDF): set the manual page crop -- fractions of the page to
+  // cut on each side, or null to clear. Pairs with a renderer 'crop'
+  // attribute change, which rebuilds the visible frames at the cropped size.
+  setCrop?(crop: PdfCropRect | null): void;
 
   // Container access, present on EPUB. Recorded narration needs both: the SMIL
   // files as text, the audio as blobs. Hrefs are zip paths, as resolved on
