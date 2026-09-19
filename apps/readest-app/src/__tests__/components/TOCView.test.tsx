@@ -42,6 +42,22 @@ vi.mock('@/app/reader/hooks/useTextTranslation', () => ({
   useTextTranslation: () => {},
 }));
 
+// TOCView reads useEnv for the TOC-override save path; the real context drags
+// in the sync/supabase module chain, which cannot initialize under jsdom.
+vi.mock('@/context/EnvContext', () => ({
+  useEnv: () => ({ envConfig: null, appService: null }),
+}));
+
+// Same for bookDataStore (used for the PDF-only edit toggle): its libraryStore
+// dependency pulls the supabase chain in, so stub it with no books loaded.
+vi.mock('@/store/bookDataStore', () => {
+  const state = { booksData: {}, setState: vi.fn() };
+  return {
+    useBookDataStore: <R,>(selector?: (s: typeof state) => R) =>
+      selector ? selector(state) : state,
+  };
+});
+
 // Virtuoso is replaced with a stub that exposes a spy-able `scrollToIndex`
 // through the imperative handle and hands TOCView a scroller element.
 vi.mock('react-virtuoso', async () => {

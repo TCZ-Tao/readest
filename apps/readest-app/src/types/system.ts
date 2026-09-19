@@ -1,7 +1,7 @@
 import { SystemSettings } from './settings';
 import type { RssFeed } from '@/types/rss';
 import { Book, BookConfig, BookContent, ImportBookOptions, ViewSettings } from './book';
-import { BookMetadata } from '@/libs/document';
+import { BookMetadata, TOCItem } from '@/libs/document';
 import type { BookNav } from '@/services/nav';
 import { ProgressHandler } from '@/utils/transfer';
 import { CustomFont, CustomFontInfo } from '@/styles/fonts';
@@ -244,6 +244,8 @@ export interface AppService {
   saveBookConfig(book: Book, config: BookConfig, settings?: SystemSettings): Promise<void>;
   loadBookNav(book: Book): Promise<BookNav | null>;
   saveBookNav(book: Book, nav: BookNav): Promise<void>;
+  loadTocOverride(book: Book): Promise<TOCItem[] | null>;
+  saveTocOverride(book: Book, toc: TOCItem[]): Promise<void>;
   loadBookContent(book: Book): Promise<BookContent>;
   resolveNativeBookFilePath(book: Book): Promise<string | null>;
   loadFeeds(): Promise<RssFeed[]>;

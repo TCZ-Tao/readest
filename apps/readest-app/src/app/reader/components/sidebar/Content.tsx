@@ -23,6 +23,11 @@ const SidebarContent: React.FC<{
   const { getConfig, setConfig } = useBookDataStore();
   const { settings } = useSettingsStore();
   const config = getConfig(sideBarBookKey);
+  // PDFs without an embedded outline still get a TOC tab — the TOC editor
+  // builds one from scratch in that case.
+  const isPdfBook =
+    useBookDataStore((state) => state.booksData[sideBarBookKey.split('-')[0]!])?.book?.format ===
+    'PDF';
   const [activeTab, setActiveTab] = useState(config?.viewSettings?.sideBarTab || 'toc');
   const [fade, setFade] = useState(false);
   const [targetTab, setTargetTab] = useState(activeTab);
@@ -113,8 +118,8 @@ const SidebarContent: React.FC<{
                 },
               )}
             >
-              {targetTab === 'toc' && bookDoc.toc && (
-                <TOCView toc={bookDoc.toc} bookKey={sideBarBookKey} />
+              {targetTab === 'toc' && (bookDoc.toc || isPdfBook) && (
+                <TOCView toc={bookDoc.toc ?? []} bookKey={sideBarBookKey} />
               )}
               {targetTab === 'annotations' && (
                 <BooknoteView type='annotation' toc={bookDoc.toc ?? []} bookKey={sideBarBookKey} />

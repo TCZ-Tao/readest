@@ -2324,5 +2324,17 @@
   "Web URL": "වෙබ් URL",
   "Loading chapter…": "පරිච්ඡේදය පූරණය වෙමින්…",
   "Clip Page": "ක්ලිප් පිටුව",
-  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "මෙම තේරීම හැඩතල හෝ ඡේද මායිම් ඉක්මවා යයි. කෙටි පෙළ කොටසක් තෝරන්න, නැතහොත් වෙනත් ප්‍රතිස්ථාපන පරාසයක් තෝරන්න."
+  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "මෙම තේරීම හැඩතල හෝ ඡේද මායිම් ඉක්මවා යයි. කෙටි පෙළ කොටසක් තෝරන්න, නැතහොත් වෙනත් ප්‍රතිස්ථාපන පරාසයක් තෝරන්න.",
+  "Copied annotation link": "__STRING_NOT_TRANSLATED__",
+  "Page {{page}}": "__STRING_NOT_TRANSLATED__",
+  "Done": "__STRING_NOT_TRANSLATED__",
+  "Add current page": "__STRING_NOT_TRANSLATED__",
+  "Table of contents": "__STRING_NOT_TRANSLATED__",
+  "Edit TOC": "__STRING_NOT_TRANSLATED__",
+  "Auto Copy Annotation Link": "__STRING_NOT_TRANSLATED__",
+  "Copy Link Format": "__STRING_NOT_TRANSLATED__",
+  "Developer": "__STRING_NOT_TRANSLATED__",
+  "MCP Debug Server": "__STRING_NOT_TRANSLATED__",
+  "Let AI clients inspect this app over MCP": "__STRING_NOT_TRANSLATED__",
+  "Copy Link to Selection": "__STRING_NOT_TRANSLATED__"
 }

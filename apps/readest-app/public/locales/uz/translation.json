@@ -2324,5 +2324,17 @@
   "Web URL": "Veb URL",
   "Loading chapter…": "Bob yuklanmoqda…",
   "Clip Page": "Sahifani saqlash",
-  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "Bu tanlov formatlash yoki xatboshi chegaralaridan chiqib ketadi. Qisqaroq matn qismini tanlang yoki boshqa almashtirish qamrovini tanlang."
+  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "Bu tanlov formatlash yoki xatboshi chegaralaridan chiqib ketadi. Qisqaroq matn qismini tanlang yoki boshqa almashtirish qamrovini tanlang.",
+  "Copied annotation link": "__STRING_NOT_TRANSLATED__",
+  "Page {{page}}": "__STRING_NOT_TRANSLATED__",
+  "Done": "__STRING_NOT_TRANSLATED__",
+  "Add current page": "__STRING_NOT_TRANSLATED__",
+  "Table of contents": "__STRING_NOT_TRANSLATED__",
+  "Edit TOC": "__STRING_NOT_TRANSLATED__",
+  "Auto Copy Annotation Link": "__STRING_NOT_TRANSLATED__",
+  "Copy Link Format": "__STRING_NOT_TRANSLATED__",
+  "Developer": "__STRING_NOT_TRANSLATED__",
+  "MCP Debug Server": "__STRING_NOT_TRANSLATED__",
+  "Let AI clients inspect this app over MCP": "__STRING_NOT_TRANSLATED__",
+  "Copy Link to Selection": "__STRING_NOT_TRANSLATED__"
 }

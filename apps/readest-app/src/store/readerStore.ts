@@ -271,6 +271,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         config.viewSettings?.sortedTOC ?? false,
         config.viewSettings?.convertChineseVariant ?? 'none',
       );
+      // PDF TOC editor: replace the file's outline with the user-edited tree.
+      // Applied after updateToc, which early-returns for pre-paginated books.
+      if (book.format === 'PDF') {
+        const tocOverride = await appService.loadTocOverride(book);
+        if (tocOverride) bookDoc.toc = tocOverride;
+      }
       if (!bookDoc.metadata.title && file) {
         bookDoc.metadata.title = getBaseFilename(file.name);
       }

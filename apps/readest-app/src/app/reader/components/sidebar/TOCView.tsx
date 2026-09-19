@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useOverlayScrollbars } from 'overlayscrollbars-react';
+import { FiEdit2 } from 'react-icons/fi';
 import 'overlayscrollbars/overlayscrollbars.css';
 
 import { TOCItem } from '@/libs/document';
+import { useEnv } from '@/context/EnvContext';
 import { useReaderStore } from '@/store/readerStore';
 import { useSidebarStore } from '@/store/sidebarStore';
+import { useBookDataStore } from '@/store/bookDataStore';
+import { useTranslation } from '@/hooks/useTranslation';
 import { eventDispatcher } from '@/utils/event';
 import { useTextTranslation } from '../../hooks/useTextTranslation';
+import TOCEditView from './TOCEditView';
 import {
   buildTOCDisplayItems,
   CurrentPositionRow,
@@ -16,6 +21,7 @@ import {
   StaticListRow,
 } from './TOCItem';
 import { computeExpandedSet, getItemIdentifier } from './tocTree';
+import { ensureTocIds } from './tocEditTree';
 
 const flattenTOC = (items: TOCItem[], expandedItems: Set<string>, depth = 0): FlatTOCItem[] => {
   const result: FlatTOCItem[] = [];
@@ -52,12 +58,50 @@ const TOCView: React.FC<{
 }> = ({ bookKey, toc }) => {
   const { getView, getViewSettings, getProgress } = useReaderStore();
   const { sideBarBookKey, isSideBarVisible } = useSidebarStore();
+  const { appService } = useEnv();
+  const _ = useTranslation();
   const progress = getProgress(bookKey);
   const isEink = !!getViewSettings(bookKey)?.isEink;
+  const bookData = useBookDataStore((state) => state.booksData[bookKey.split('-')[0]!]);
+  const isPdf = bookData?.book?.format === 'PDF';
+  const book = bookData?.book ?? null;
 
   const [initialScrollTarget] = useState(() => getInitialScrollTarget(toc, progress?.sectionHref));
   const [expandedItems, setExpandedItems] = useState<Set<string>>(initialScrollTarget.expanded);
   const [containerHeight, setContainerHeight] = useState(400);
+  const [editing, setEditing] = useState(false);
+  const [editToc, setEditToc] = useState<TOCItem[] | null>(null);
+
+  // Persist an edited tree: refresh bookDoc.toc (drives this panel and the
+  // annotation/bookmark section labels) and write the override file that
+  // readerStore reapplies on the next open.
+  const commitToc = useCallback(
+    (newToc: TOCItem[]) => {
+      setEditToc(newToc);
+      const id = bookKey.split('-')[0]!;
+      useBookDataStore.setState((state) => {
+        const existing = state.booksData[id];
+        if (!existing?.bookDoc) return state;
+        return {
+          booksData: {
+            ...state.booksData,
+            [id]: { ...existing, bookDoc: { ...existing.bookDoc, toc: newToc } },
+          },
+        };
+      });
+      if (book) {
+        appService
+          ?.saveTocOverride(book, newToc)
+          .catch((e) => console.warn('Failed to save TOC override:', e));
+      }
+    },
+    [bookKey, book, appService],
+  );
+
+  const startEditing = useCallback(() => {
+    setEditToc(ensureTocIds(toc));
+    setEditing(true);
+  }, [toc]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
@@ -225,6 +269,7 @@ const TOCView: React.FC<{
   }, [bookKey, getView, getProgress]);
 
   useEffect(() => {
+    if (editing) return;
     if (!isSideBarVisible || sideBarBookKey !== bookKey) {
       userScrolledRef.current = false;
       pendingScrollRef.current = false;
@@ -244,9 +289,10 @@ const TOCView: React.FC<{
       }
       initialAutoScrollProcessedRef.current = true;
     }
-  }, [isSideBarVisible, sideBarBookKey, bookKey, toc, progress]);
+  }, [isSideBarVisible, sideBarBookKey, bookKey, toc, progress, editing]);
 
   useEffect(() => {
+    if (editing) return;
     if (!pendingScrollRef.current || !activeHref || !isSideBarVisible) return;
     const idx = flatItems.findIndex((f) => f.item.href === activeHref);
     if (idx === -1) {
@@ -274,64 +320,93 @@ const TOCView: React.FC<{
       });
     }
     pendingScrollRef.current = false;
-  }, [flatItems, activeHref, isSideBarVisible, isEink]);
+  }, [flatItems, activeHref, isSideBarVisible, isEink, editing]);
 
   return (
     <div ref={containerRef} className='toc-list rounded-sm' role='tree'>
-      <div ref={osRootRef} data-overlayscrollbars-initialize='' style={{ height: containerHeight }}>
-        <Virtuoso
-          ref={virtuosoRef}
-          scrollerRef={handleScrollerRef}
-          initialTopMostItemIndex={
-            initialScrollTarget.index > 0
-              ? { index: initialScrollTarget.index, align: 'center' }
-              : 0
-          }
-          rangeChanged={({ startIndex, endIndex }) => {
-            visibleCenterRef.current = Math.floor((startIndex + endIndex) / 2);
+      {isPdf && !editing && (
+        <div className='flex justify-end px-2 pt-1'>
+          <button
+            onClick={startEditing}
+            className='btn btn-ghost btn-sm text-base-content/70 text-sm'
+            title={_('Edit TOC')}
+          >
+            <FiEdit2 aria-hidden='true' />
+            {_('Edit TOC')}
+          </button>
+        </div>
+      )}
+      {editing && editToc ? (
+        <TOCEditView
+          bookKey={bookKey}
+          toc={editToc}
+          containerHeight={containerHeight}
+          onCommit={commitToc}
+          onExit={() => {
+            setEditing(false);
+            setEditToc(null);
           }}
-          onScroll={() => {
-            // A scroll arriving while a pending auto-scroll is still queued
-            // (idx === -1, waiting on flatItems to expand) normally means the
-            // user is now driving — drop the queued auto-scroll so the next
-            // render doesn't yank them away. But auto-expanding the current
-            // volume on open grows the list and emits a synthetic scroll with
-            // no gesture behind it; ignore that so the initial auto-scroll
-            // survives. A real user scroll still cancels it via userInputRef.
-            if (pendingScrollRef.current && !userInputRef.current) return;
-            pendingScrollRef.current = false;
-            userScrolledRef.current = true;
-            if (scrollCooldownRef.current) clearTimeout(scrollCooldownRef.current);
-            scrollCooldownRef.current = setTimeout(() => {
-              userScrolledRef.current = false;
-            }, 10000);
-          }}
+        />
+      ) : (
+        <div
+          ref={osRootRef}
+          data-overlayscrollbars-initialize=''
           style={{ height: containerHeight }}
-          totalCount={displayItems.length}
-          itemContent={(index) => {
-            const row = displayItems[index]!;
-            if (isCurrentPositionItem(row)) {
+        >
+          <Virtuoso
+            ref={virtuosoRef}
+            scrollerRef={handleScrollerRef}
+            initialTopMostItemIndex={
+              initialScrollTarget.index > 0
+                ? { index: initialScrollTarget.index, align: 'center' }
+                : 0
+            }
+            rangeChanged={({ startIndex, endIndex }) => {
+              visibleCenterRef.current = Math.floor((startIndex + endIndex) / 2);
+            }}
+            onScroll={() => {
+              // A scroll arriving while a pending auto-scroll is still queued
+              // (idx === -1, waiting on flatItems to expand) normally means the
+              // user is now driving — drop the queued auto-scroll so the next
+              // render doesn't yank them away. But auto-expanding the current
+              // volume on open grows the list and emits a synthetic scroll with
+              // no gesture behind it; ignore that so the initial auto-scroll
+              // survives. A real user scroll still cancels it via userInputRef.
+              if (pendingScrollRef.current && !userInputRef.current) return;
+              pendingScrollRef.current = false;
+              userScrolledRef.current = true;
+              if (scrollCooldownRef.current) clearTimeout(scrollCooldownRef.current);
+              scrollCooldownRef.current = setTimeout(() => {
+                userScrolledRef.current = false;
+              }, 10000);
+            }}
+            style={{ height: containerHeight }}
+            totalCount={displayItems.length}
+            itemContent={(index) => {
+              const row = displayItems[index]!;
+              if (isCurrentPositionItem(row)) {
+                return (
+                  <CurrentPositionRow
+                    depth={row.depth}
+                    page={row.page}
+                    onClick={handleCurrentPositionClick}
+                  />
+                );
+              }
               return (
-                <CurrentPositionRow
-                  depth={row.depth}
-                  page={row.page}
-                  onClick={handleCurrentPositionClick}
+                <StaticListRow
+                  bookKey={bookKey}
+                  flatItem={row}
+                  activeHref={activeHref}
+                  onToggleExpand={handleToggleExpand}
+                  onItemClick={handleItemClick}
                 />
               );
-            }
-            return (
-              <StaticListRow
-                bookKey={bookKey}
-                flatItem={row}
-                activeHref={activeHref}
-                onToggleExpand={handleToggleExpand}
-                onItemClick={handleItemClick}
-              />
-            );
-          }}
-          overscan={500}
-        />
-      </div>
+            }}
+            overscan={500}
+          />
+        </div>
+      )}
     </div>
   );
 };

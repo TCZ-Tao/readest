@@ -2324,5 +2324,17 @@
   "Web URL": "آدرس وب",
   "Loading chapter…": "در حال بارگیری فصل…",
   "Clip Page": "صفحه کلیپ",
-  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "این انتخاب از مرزهای قالب‌بندی یا پاراگراف عبور می‌کند. بخش کوتاه‌تری از متن را انتخاب کنید یا دامنهٔ جایگزینی دیگری برگزینید."
+  "This selection spans formatting or paragraph boundaries. Select a smaller piece of text, or choose another replacement scope.": "این انتخاب از مرزهای قالب‌بندی یا پاراگراف عبور می‌کند. بخش کوتاه‌تری از متن را انتخاب کنید یا دامنهٔ جایگزینی دیگری برگزینید.",
+  "Copied annotation link": "__STRING_NOT_TRANSLATED__",
+  "Page {{page}}": "__STRING_NOT_TRANSLATED__",
+  "Done": "__STRING_NOT_TRANSLATED__",
+  "Add current page": "__STRING_NOT_TRANSLATED__",
+  "Table of contents": "__STRING_NOT_TRANSLATED__",
+  "Edit TOC": "__STRING_NOT_TRANSLATED__",
+  "Auto Copy Annotation Link": "__STRING_NOT_TRANSLATED__",
+  "Copy Link Format": "__STRING_NOT_TRANSLATED__",
+  "Developer": "__STRING_NOT_TRANSLATED__",
+  "MCP Debug Server": "__STRING_NOT_TRANSLATED__",
+  "Let AI clients inspect this app over MCP": "__STRING_NOT_TRANSLATED__",
+  "Copy Link to Selection": "__STRING_NOT_TRANSLATED__"
 }

@@ -17,6 +17,7 @@ import {
   getCoverFilename,
   getConfigFilename,
   getBookNavFilename,
+  getTocOverrideFilename,
   INIT_BOOK_CONFIG,
   formatTitle,
   formatAuthors,
@@ -27,7 +28,7 @@ import {
 import type { BookNav } from '@/services/nav';
 import { partialMD5, md5 } from '@/utils/md5';
 import { getBaseFilename, getFilename, stripDuplicateMarker } from '@/utils/path';
-import { BookDoc, DocumentLoader } from '@/libs/document';
+import { BookDoc, DocumentLoader, TOCItem } from '@/libs/document';
 import { hasMediaOverlays } from '@/services/tts/mediaOverlay';
 import { getAudiobookDirectory, isAudiobookFilePath } from '@/services/audiobook/storage';
 import { isAudiobook } from '@/utils/audiobook';
@@ -1103,6 +1104,24 @@ export async function loadBookNav(fs: FileSystem, book: Book): Promise<BookNav |
 
 export async function saveBookNav(fs: FileSystem, book: Book, nav: BookNav): Promise<void> {
   await fs.writeFile(getBookNavFilename(book), 'Books', JSON.stringify(nav));
+}
+
+// User-edited PDF table of contents (per-book override). The PDF file itself is
+// never touched; on open the stored tree replaces bookDoc.toc wholesale.
+export async function loadTocOverride(fs: FileSystem, book: Book): Promise<TOCItem[] | null> {
+  try {
+    const path = getTocOverrideFilename(book);
+    if (!(await fs.exists(path, 'Books'))) return null;
+    const str = (await fs.readFile(path, 'Books', 'text')) as string;
+    const parsed = JSON.parse(str);
+    return Array.isArray(parsed) ? (parsed as TOCItem[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveTocOverride(fs: FileSystem, book: Book, toc: TOCItem[]): Promise<void> {
+  await fs.writeFile(getTocOverrideFilename(book), 'Books', JSON.stringify(toc));
 }
 
 export async function fetchBookDetails(

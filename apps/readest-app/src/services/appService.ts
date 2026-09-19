@@ -19,6 +19,7 @@ import { DatabaseOpts, DatabaseService } from '@/types/database';
 import { SchemaType } from '@/services/database/migrate';
 import { Book, BookConfig, BookContent, ImportBookOptions, ViewSettings } from '@/types/book';
 import type { BookNav } from '@/services/nav';
+import type { TOCItem } from '@/libs/document';
 import { getLibraryFilename, getLibraryBackupFilename } from '@/utils/book';
 import { getDirPath, getFilename } from '@/utils/path';
 
@@ -635,6 +636,14 @@ export abstract class BaseAppService implements AppService {
 
   async saveBookNav(book: Book, nav: BookNav) {
     return BookSvc.saveBookNav(this.fs, book, nav);
+  }
+
+  async loadTocOverride(book: Book) {
+    return BookSvc.loadTocOverride(this.fs, book);
+  }
+
+  async saveTocOverride(book: Book, toc: TOCItem[]) {
+    return BookSvc.saveTocOverride(this.fs, book, toc);
   }
 
   async loadFeeds(): Promise<RssFeed[]> {
