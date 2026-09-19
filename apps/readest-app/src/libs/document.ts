@@ -141,6 +141,12 @@ export interface BookDoc {
   getDrawings?(): PdfDrawing[];
   getPdfPageSize?(index: number): Promise<{ width: number; height: number }>;
   convertToPdfPoint?(index: number, x: number, y: number, scale: number): Promise<[number, number]>;
+  convertToViewportPoint?(
+    index: number,
+    x: number,
+    y: number,
+    scale: number,
+  ): Promise<[number, number]>;
 
   // Container access, present on EPUB. Recorded narration needs both: the SMIL
   // files as text, the audio as blobs. Hrefs are zip paths, as resolved on

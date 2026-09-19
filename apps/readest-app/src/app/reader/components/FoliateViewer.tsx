@@ -106,6 +106,7 @@ import ImageViewer from './ImageViewer';
 import TableViewer from './TableViewer';
 import PdfCropOverlay from './PdfCropOverlay';
 import PdfDrawOverlay from './PdfDrawOverlay';
+import PdfShapeEditor from './PdfShapeEditor';
 import { getTTSMiniPlayerClearance } from '../utils/ttsMiniPlayerPosition';
 
 declare global {
@@ -1166,6 +1167,11 @@ const FoliateViewer: React.FC<{
           viewSettings.annotationQuickAction === 'pdf-rect' ||
           viewSettings.annotationQuickAction === 'pdf-text') && (
           <PdfDrawOverlay bookKey={bookKey} tool={viewSettings.annotationQuickAction} />
+        )}
+      {bookData?.book?.format === 'PDF' &&
+        viewSettings?.enableAnnotationQuickActions &&
+        viewSettings.annotationQuickAction === 'pdf-select' && (
+          <PdfShapeEditor bookKey={bookKey} />
         )}
       <div
         ref={containerRef}

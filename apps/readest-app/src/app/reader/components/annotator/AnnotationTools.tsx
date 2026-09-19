@@ -6,6 +6,7 @@ import { FiShare } from 'react-icons/fi';
 import { FiSlash } from 'react-icons/fi';
 import { FiSquare } from 'react-icons/fi';
 import { FiType } from 'react-icons/fi';
+import { FiMousePointer } from 'react-icons/fi';
 import { PiHighlighterFill } from 'react-icons/pi';
 import { LuBookA } from 'react-icons/lu';
 import { BsPencilSquare } from 'react-icons/bs';
@@ -141,6 +142,13 @@ export const pdfDrawingToolButtons: AnnotationToolButton<PdfDrawToolType>[] = [
     label: _('Text'),
     tooltip: _('Add a text annotation on the page'),
     Icon: FiType,
+    quickAction: true,
+  },
+  {
+    type: 'pdf-select',
+    label: _('Select'),
+    tooltip: _('Select, move or resize drawings on the page'),
+    Icon: FiMousePointer,
     quickAction: true,
   },
 ];
