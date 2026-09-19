@@ -347,8 +347,7 @@ fn set_webview_info(user_agent: String) {
 // None. Reader windows carry their books in the URL (see `showReaderWindow` in
 // src/utils/nav.ts), and the JS side cannot read a webview's URL, so the
 // frontend asks here before spawning a duplicate window for the same book.
-#[tauri::command]
-fn find_reader_window_with_book(app: tauri::AppHandle, hash: String) -> Option<String> {
+fn find_reader_window_label(app: &tauri::AppHandle, hash: &str) -> Option<String> {
     for (label, webview) in app.webview_windows() {
         if !label.starts_with("reader") {
             continue;
@@ -364,6 +363,11 @@ fn find_reader_window_with_book(app: tauri::AppHandle, hash: String) -> Option<S
         }
     }
     None
+}
+
+#[tauri::command]
+fn find_reader_window_with_book(app: tauri::AppHandle, hash: String) -> Option<String> {
+    find_reader_window_label(&app, &hash)
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -580,8 +584,32 @@ pub fn run() {
     let builder = builder.plugin(
         tauri_plugin_single_instance::Builder::new()
             .callback(move |app, argv, cwd| {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_focus();
+                // Focus the window that will handle the incoming URL right
+                // away — the frontend focuses the same window again after
+                // routing, but without this the foreground sits unclaimed for
+                // the ~half second the routing takes and flickers through
+                // whatever window is next in the Z order. Book links name
+                // their book (readest://book/{hash}/…), so the reader window
+                // holding it can be raised directly; other URLs (auth
+                // callback, file opens) and not-yet-open books fall back to
+                // the library window, which owns opening the book.
+                let book_hash = argv
+                    .iter()
+                    .find(|arg| arg.starts_with("readest://book/"))
+                    .and_then(|arg| arg.split("readest://book/").nth(1))
+                    .and_then(|rest| rest.split('/').next())
+                    .map(str::to_string);
+                let focused = book_hash
+                    .and_then(|hash| find_reader_window_label(app, &hash))
+                    .is_some_and(|label| {
+                        app.get_webview_window(&label)
+                            .map(|window| window.set_focus().is_ok())
+                            .unwrap_or(false)
+                    });
+                if !focused {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.set_focus();
+                    }
                 }
                 let files = get_files_from_argv(argv.clone());
                 if !files.is_empty() {
