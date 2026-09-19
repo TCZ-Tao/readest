@@ -59,6 +59,7 @@ import { getWordCount, isSingleLookupTerm } from '@/utils/word';
 import { getIndexFromCfi } from '@/utils/cfi';
 import { writeTextToClipboard } from '@/utils/clipboard';
 import { buildAnnotationUrl } from '@/utils/deeplink';
+import { formatAnnotationLink } from '@/utils/note';
 import { DEFAULT_NOTE_EXPORT_CONFIG } from '@/services/constants';
 import { canShareText, shareSelectedText } from '@/utils/share';
 import {
@@ -1280,7 +1281,8 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets }> = ({
   // sent somewhere the moment it is made instead of hunting for it in the
   // sidebar notebook (#5452). When no note is anchored here yet the link still
   // points at the position — resolution keys off the cfi, the note id is only
-  // required to be present.
+  // required to be present. The user's link-format template (设置 → 行为 →
+  // 复制链接格式) wraps the URL when set.
   const handleCopyLink = () => {
     if (!selection) return;
     const cfi =
@@ -1292,7 +1294,9 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets }> = ({
       { bookHash: bookKey.split('-')[0]!, noteId: noteId ?? uniqueId(), cfi },
       linkType,
     );
-    void writeTextToClipboard(url);
+    void writeTextToClipboard(
+      formatAnnotationLink(url, viewSettings.noteExportConfig?.linkFormat, selection.text),
+    );
     eventDispatcher.dispatch('toast', {
       type: 'info',
       message: _('Copied to clipboard'),
@@ -1300,6 +1304,25 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets }> = ({
       timeout: 2000,
     });
     handleDismissPopupAndSelection();
+  };
+
+  // Auto-copy the freshly created highlight's link (设置 → 行为 → 标注后自动复制
+  // 链接): the highlight was just persisted, so the link's note id is real.
+  const copyAnnotationLink = (annotation: BookNote) => {
+    const linkType = viewSettings.noteExportConfig?.linkType ?? DEFAULT_NOTE_EXPORT_CONFIG.linkType;
+    const url = buildAnnotationUrl(
+      { bookHash: bookKey.split('-')[0]!, noteId: annotation.id, cfi: annotation.cfi },
+      linkType,
+    );
+    void writeTextToClipboard(
+      formatAnnotationLink(url, viewSettings.noteExportConfig?.linkFormat, annotation.text),
+    );
+    eventDispatcher.dispatch('toast', {
+      type: 'info',
+      message: _('Copied annotation link'),
+      className: 'whitespace-nowrap',
+      timeout: 2000,
+    });
   };
 
   const handleShare = () => {
@@ -1407,6 +1430,9 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets }> = ({
     const updatedConfig = updateBooknotes(bookKey, annotations);
     if (updatedConfig) {
       saveConfig(envConfig, bookKey, updatedConfig, settings);
+    }
+    if (created.length > 0 && updatedConfig && viewSettings?.autoCopyAnnotationLink) {
+      copyAnnotationLink(created[0]!);
     }
     return created;
   };
@@ -1708,6 +1734,11 @@ const Annotator: React.FC<{ bookKey: string; contentInsets: Insets }> = ({
       onCopySelection: () => {
         if (!selection?.text) return false;
         handleCopy(false);
+        return true;
+      },
+      onCopyLinkSelection: () => {
+        if (!selection?.text || (selection.popup && !selection.cfi)) return false;
+        handleCopyLink();
         return true;
       },
       onTranslateSelection: () => {

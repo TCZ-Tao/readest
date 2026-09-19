@@ -2,6 +2,9 @@ import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useNotebookDocumentStore } from '@/store/notebookDocumentStore';
 import { eventDispatcher } from '@/utils/event';
+import { writeTextToClipboard } from '@/utils/clipboard';
+
+vi.mock('@/utils/clipboard', () => ({ writeTextToClipboard: vi.fn() }));
 
 const h = vi.hoisted(() => ({
   actions: null as null | Record<string, () => boolean>,
@@ -10,6 +13,7 @@ const h = vi.hoisted(() => ({
     annotationToolbarItems: [] as string[],
     noteExportConfig: {},
     copyToNotebook: false,
+    autoCopyAnnotationLink: false,
     rtl: false,
     vertical: false,
   },
@@ -229,6 +233,8 @@ describe('Annotator popup shortcuts', () => {
     h.view = null;
     h.config.booknotes = [];
     h.viewSettings.copyToNotebook = false;
+    h.viewSettings.autoCopyAnnotationLink = false;
+    h.viewSettings.noteExportConfig = {};
     h.updateBooknotes.mockImplementation(() => h.config);
     useNotebookDocumentStore.getState().reset();
     vi.clearAllMocks();
@@ -241,6 +247,7 @@ describe('Annotator popup shortcuts', () => {
   test.each([
     'onHighlightSelection',
     'onUnderlineSelection',
+    'onCopyLinkSelection',
   ])('%s does not claim popup text without a CFI', async (action) => {
     render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
     await selectPopupText();
@@ -310,5 +317,86 @@ describe('Annotator popup shortcuts', () => {
       expect.objectContaining({ type: 'excerpt', text: 'selected text' }),
     ]);
     expect(useNotebookDocumentStore.getState().sessions['book']?.content).toBe('# Existing notes');
+  });
+
+  test('onCopyLinkSelection copies the annotation deeplink without touching booknotes', async () => {
+    render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
+    await selectPopupText('epubcfi(/6/2!/4/2)');
+
+    let handled: boolean | undefined;
+    act(() => {
+      handled = h.actions?.['onCopyLinkSelection']?.();
+    });
+
+    expect(handled).toBe(true);
+    expect(vi.mocked(writeTextToClipboard)).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(writeTextToClipboard).mock.calls[0]?.[0])).toContain('/annotation/');
+    expect(h.updateBooknotes).not.toHaveBeenCalled();
+  });
+
+  test('onCopyLinkSelection applies the copy-link format template', async () => {
+    h.viewSettings.noteExportConfig = { linkFormat: '[{{text}}]({{link}})' };
+    render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
+    await selectPopupText('epubcfi(/6/2!/4/2)');
+
+    act(() => {
+      h.actions?.['onCopyLinkSelection']?.();
+    });
+
+    expect(vi.mocked(writeTextToClipboard)).toHaveBeenCalledOnce();
+    const copied = String(vi.mocked(writeTextToClipboard).mock.calls[0]?.[0]);
+    expect(copied).toMatch(/^\[selected text\]\(.*\/annotation\/.*\)$/);
+  });
+
+  test('the copy-link format template collapses line breaks in {{text}}', async () => {
+    h.viewSettings.noteExportConfig = { linkFormat: '[{{text}}]({{link}})' };
+    render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
+    const paragraph = document.createElement('p');
+    paragraph.textContent = 'line one\nline two';
+    document.body.append(paragraph);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    await act(async () => {
+      await eventDispatcher.dispatch('footnote-selection', {
+        key: 'book-1',
+        range,
+        index: 0,
+        cfi: 'epubcfi(/6/2!/4/2)',
+      });
+    });
+
+    act(() => {
+      h.actions?.['onCopyLinkSelection']?.();
+    });
+
+    const copied = String(vi.mocked(writeTextToClipboard).mock.calls[0]?.[0]);
+    expect(copied).toMatch(/^\[line one line two\]\(.*\/annotation\/.*\)$/);
+  });
+
+  test('auto-copies the new highlight link when autoCopyAnnotationLink is on', async () => {
+    h.viewSettings.autoCopyAnnotationLink = true;
+    render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
+    await selectPopupText('epubcfi(/6/2!/4/2)');
+
+    act(() => {
+      h.actions?.['onHighlightSelection']?.();
+    });
+
+    expect(h.updateBooknotes).toHaveBeenCalledOnce();
+    expect(vi.mocked(writeTextToClipboard)).toHaveBeenCalledOnce();
+    const copied = String(vi.mocked(writeTextToClipboard).mock.calls[0]?.[0]);
+    expect(copied).toContain('/annotation/');
+  });
+
+  test('does not auto-copy the highlight link when autoCopyAnnotationLink is off', async () => {
+    render(<Annotator bookKey='book-1' contentInsets={{ top: 0, right: 0, bottom: 0, left: 0 }} />);
+    await selectPopupText('epubcfi(/6/2!/4/2)');
+
+    act(() => {
+      h.actions?.['onHighlightSelection']?.();
+    });
+
+    expect(h.updateBooknotes).toHaveBeenCalledOnce();
+    expect(vi.mocked(writeTextToClipboard)).not.toHaveBeenCalled();
   });
 });

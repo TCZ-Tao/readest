@@ -128,6 +128,11 @@ const DEFAULT_SHORTCUTS = {
     description: _('Copy Selection'),
     section: 'Selection',
   },
+  onCopyLinkSelection: {
+    keys: ['ctrl+shift+c', 'cmd+shift+c'],
+    description: _('Copy Link to Selection'),
+    section: 'Selection',
+  },
   onTranslateSelection: {
     keys: ['ctrl+t', 'cmd+t'],
     description: _('Translate Selection'),

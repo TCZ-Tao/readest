@@ -17,6 +17,7 @@ import { isTauriAppPlatform } from '@/services/environment';
 import {
   BoxedList,
   NavigationRow,
+  SettingsInput,
   SettingsRow,
   SettingsSelect,
   SettingsSwitchRow,
@@ -58,6 +59,12 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
     viewSettings.annotationQuickAction,
   );
   const [copyToNotebook, setCopyToNotebook] = useState(viewSettings.copyToNotebook);
+  const [autoCopyAnnotationLink, setAutoCopyAnnotationLink] = useState(
+    viewSettings.autoCopyAnnotationLink,
+  );
+  const [copyLinkFormat, setCopyLinkFormat] = useState(
+    viewSettings.noteExportConfig?.linkFormat ?? '',
+  );
   const [showToolbarCustomizer, setShowToolbarCustomizer] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [animated, setAnimated] = useState(viewSettings.animated);
@@ -110,6 +117,7 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
       disableDoubleClick: setIsDisableDoubleClick,
       enableAnnotationQuickActions: setEnableAnnotationQuickActions,
       copyToNotebook: setCopyToNotebook,
+      autoCopyAnnotationLink: setAutoCopyAnnotationLink,
     });
     saveViewSettings(
       envConfig,
@@ -308,6 +316,33 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyToNotebook]);
 
+  useEffect(() => {
+    saveViewSettings(
+      envConfig,
+      bookKey,
+      'autoCopyAnnotationLink',
+      autoCopyAnnotationLink,
+      false,
+      false,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCopyAnnotationLink]);
+
+  // The link format is free text: persist on blur (or Enter via blur) rather
+  // than per keystroke, so half-typed templates never sync.
+  const saveCopyLinkFormat = () => {
+    const trimmed = copyLinkFormat.trim();
+    if (trimmed === (viewSettings.noteExportConfig?.linkFormat ?? '')) return;
+    saveViewSettings(
+      envConfig,
+      bookKey,
+      'noteExportConfig',
+      { ...viewSettings.noteExportConfig, linkFormat: trimmed },
+      false,
+      false,
+    );
+  };
+
   const toggleAutoCheckUpdates = () => {
     const newValue = !isAutoCheckUpdates;
     saveSysSettings(envConfig, 'autoCheckUpdates', newValue);
@@ -478,6 +513,26 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
           onChange={() => setCopyToNotebook(!copyToNotebook)}
           data-setting-id='settings.control.copyToNotebook'
         />
+        <SettingsSwitchRow
+          label={_('Auto Copy Annotation Link')}
+          checked={autoCopyAnnotationLink}
+          onChange={() => setAutoCopyAnnotationLink(!autoCopyAnnotationLink)}
+          data-setting-id='settings.control.autoCopyAnnotationLink'
+        />
+        <SettingsRow
+          label={_('Copy Link Format')}
+          data-setting-id='settings.control.copyLinkFormat'
+        >
+          <SettingsInput
+            value={copyLinkFormat}
+            placeholder='[{{text}}]({{link}})'
+            onChange={(e) => setCopyLinkFormat(e.target.value)}
+            onBlur={saveCopyLinkFormat}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            }}
+          />
+        </SettingsRow>
         <NavigationRow
           title={_('Customize Toolbar')}
           onClick={() => setShowToolbarCustomizer(true)}

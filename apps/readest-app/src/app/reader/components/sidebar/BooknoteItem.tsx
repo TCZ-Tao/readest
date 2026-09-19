@@ -14,7 +14,7 @@ import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { eventDispatcher } from '@/utils/event';
 import { isCfiInLocation } from '@/utils/cfi';
 import { buildAnnotationUrl } from '@/utils/deeplink';
-import { buildAnnotationCopyMarkdown } from '@/utils/note';
+import { buildAnnotationCopyMarkdown, formatAnnotationLink } from '@/utils/note';
 import { writeTextToClipboard } from '@/utils/clipboard';
 import { DEFAULT_NOTE_EXPORT_CONFIG } from '@/services/constants';
 import { removeBookNoteOverlays } from '../../utils/annotatorUtil';
@@ -127,6 +127,7 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({
     const linkType =
       getViewSettings(bookKey)?.noteExportConfig?.linkType ?? DEFAULT_NOTE_EXPORT_CONFIG.linkType;
     const url = buildAnnotationUrl({ bookHash, noteId: item.id, cfi: item.cfi }, linkType);
+    const linkFormat = getViewSettings(bookKey)?.noteExportConfig?.linkFormat;
     const linkLabel = item.page
       ? _('Page: {{number}}', { number: item.page })
       : _('Open in Readest');
@@ -138,6 +139,7 @@ const BooknoteItem: React.FC<BooknoteItemProps> = ({
         noteLabel: _('Note'),
         url,
         linkLabel,
+        linkMarkdown: linkFormat ? formatAnnotationLink(url, linkFormat, item.text) : undefined,
       }),
     };
   };

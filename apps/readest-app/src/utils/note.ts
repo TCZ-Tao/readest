@@ -238,12 +238,33 @@ env.addFilter('blockquote', (value: string) => {
 });
 
 /**
+ * Applies the user's copy-link format template to an annotation URL. The
+ * `{{link}}` placeholder stands in for the URL and `{{text}}` for the
+ * highlighted text — e.g. `[{{text}}]({{link}})` yields
+ * `[object surface](readest://…)`. Line breaks in the text collapse to spaces
+ * so a multi-line highlight keeps the markdown link on one line. An empty
+ * template yields the bare URL.
+ */
+export function formatAnnotationLink(
+  url: string,
+  linkFormat: string | undefined,
+  text?: string,
+): string {
+  const template = linkFormat?.trim();
+  if (!template) return url;
+  return template
+    .replaceAll('{{link}}', url)
+    .replaceAll('{{text}}', (text ?? '').replace(/\s*\n\s*/g, ' '));
+}
+
+/**
  * Builds the markdown for copying a single annotation (highlight/note) together
  * with a deep link back to its position, ready to paste into note apps like
  * Obsidian. Mirrors the default markdown-export layout: a block-quoted highlight,
  * an optional bold note line, and an italic link line. Empty blocks are omitted;
- * the link line is always present. Label strings are passed in already translated
- * to keep this helper i18n-agnostic.
+ * the link line is always present — `linkMarkdown` (the user's link-format
+ * template applied to the URL) replaces the default italic link line when given.
+ * Label strings are passed in already translated to keep this helper i18n-agnostic.
  */
 export function buildAnnotationCopyMarkdown({
   text,
@@ -251,17 +272,19 @@ export function buildAnnotationCopyMarkdown({
   noteLabel,
   url,
   linkLabel,
+  linkMarkdown,
 }: {
   text?: string;
   note?: string;
   noteLabel: string;
   url: string;
   linkLabel: string;
+  linkMarkdown?: string;
 }): string {
   const blocks: string[] = [];
   if (text) blocks.push(formatBlockQuote(text));
   if (note) blocks.push(`**${noteLabel}**: ${note}`);
-  blocks.push(`*[${linkLabel}](${url})*`);
+  blocks.push(linkMarkdown ?? `*[${linkLabel}](${url})*`);
   return blocks.join('\n\n');
 }
 

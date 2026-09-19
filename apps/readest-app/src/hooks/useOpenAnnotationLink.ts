@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrent } from '@tauri-apps/plugin-deep-link';
+import { getAllWindows, getCurrentWindow } from '@tauri-apps/api/window';
 import { useEnv } from '@/context/EnvContext';
 import { useLibraryStore } from '@/store/libraryStore';
 import { useReaderStore } from '@/store/readerStore';
+import { useSettingsStore } from '@/store/settingsStore';
 import { isTauriAppPlatform } from '@/services/environment';
-import { navigateToReader } from '@/utils/nav';
+import {
+  navigateToReader,
+  showReaderWindow,
+  focusExistingReaderWindow,
+} from '@/utils/nav';
 import { eventDispatcher } from '@/utils/event';
 import { parseAnnotationDeepLink, AnnotationDeepLink } from '@/utils/deeplink';
 import { isMainAppWindow } from '@/utils/window';
@@ -47,12 +53,13 @@ export function useOpenAnnotationLink() {
   const _ = useTranslation();
   const router = useRouter();
   const { appService } = useEnv();
+  const openBookInNewWindow = useSettingsStore((s) => s.settings.openBookInNewWindow);
   const getBookByHash = useLibraryStore((s) => s.getBookByHash);
   const libraryLoaded = useLibraryStore((s) => s.libraryLoaded);
   const pending = useRef<AnnotationDeepLink | null>(null);
 
   const resolveAndNavigate = useCallback(
-    (parsed: AnnotationDeepLink) => {
+    async (parsed: AnnotationDeepLink) => {
       const { bookHash, cfi } = parsed;
       const book = getBookByHash(bookHash);
       if (!book) {
@@ -77,14 +84,34 @@ export function useOpenAnnotationLink() {
           viewStates[openKey]!.view!.goTo(cfi);
           setPreviewMode(openKey, true);
         }
+        // The Rust single-instance callback focuses the "main" window before
+        // the URL reaches us; the window that actually honours the link should
+        // be the one left on top, so the user lands on the annotation.
+        void getCurrentWindow().setFocus();
         return;
       }
 
-      // A reader is already mounted showing a different book. router.push to the
-      // same /reader route does NOT re-run the reader's one-shot init effect, so
-      // navigateToReader is a no-op and the reader stays on the current book
-      // (#4887). Switch the book in place via useBooksManager, carrying the cfi
-      // so the freshly-opened view jumps to the annotation once it is ready.
+      // Desktop multi-window mode: the book either lives in another reader
+      // window — which received the same URL event and jumps itself, so just
+      // bring it to the front — or in no window at all, in which case it gets
+      // its own new reader window at the annotation. Never repurpose another
+      // window's content for it.
+      if (isTauriAppPlatform() && appService?.hasWindow && openBookInNewWindow) {
+        if (await focusExistingReaderWindow(bookHash)) return;
+        // Every window received the same URL event; let the main library
+        // window be the one that opens a not-yet-open book so several reader
+        // windows don't race to open duplicates of it. (If main was closed,
+        // fail open: each window opening its own copy beats losing the link.)
+        const isMain = getCurrentWindow().label === 'main';
+        if (!isMain && (await getAllWindows()).some((window) => window.label === 'main')) return;
+        showReaderWindow(appService, [bookHash], cfi ? `cfi=${encodeURIComponent(cfi)}` : undefined);
+        return;
+      }
+
+      // Single-window mode (books open inside the main window) / mobile: a
+      // mounted reader switches its book in place. router.push to the same
+      // /reader route does NOT re-run the reader's one-shot init effect, so
+      // navigation alone wouldn't move the view in that case (#4887).
       if (window.location.pathname.startsWith('/reader')) {
         eventDispatcher.dispatch('open-book-in-reader', { bookHash, cfi });
         return;
@@ -95,13 +122,13 @@ export function useOpenAnnotationLink() {
       const queryParams = cfi ? `cfi=${encodeURIComponent(cfi)}` : undefined;
       navigateToReader(router, [bookHash], queryParams);
     },
-    [_, getBookByHash, router],
+    [_, getBookByHash, router, appService, openBookInNewWindow],
   );
 
   useEffect(() => {
     if (!isTauriAppPlatform() || !appService) return;
 
-    const handle = (url: string, coldStart = false) => {
+    const handle = async (url: string, coldStart = false) => {
       const parsed = parseAnnotationDeepLink(url);
       if (!parsed) return;
       // See useOpenBookLink: getCurrent() re-reports the launch URL to every
@@ -113,7 +140,7 @@ export function useOpenAnnotationLink() {
         pending.current = parsed;
         return;
       }
-      resolveAndNavigate(parsed);
+      await resolveAndNavigate(parsed);
     };
 
     // Only the launch window reads the cold-start URL: the deep-link plugin
@@ -145,6 +172,6 @@ export function useOpenAnnotationLink() {
     if (!libraryLoaded || !pending.current) return;
     const parsed = pending.current;
     pending.current = null;
-    resolveAndNavigate(parsed);
+    void resolveAndNavigate(parsed);
   }, [libraryLoaded, resolveAndNavigate]);
 }

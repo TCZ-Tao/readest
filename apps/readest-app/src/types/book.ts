@@ -426,6 +426,10 @@ export interface NoteExportConfig {
   includeTimestamp: boolean;
   includeChapterSeparator: boolean;
   linkType: AnnotationLinkType;
+  // Clipboard wrapper for the copy-link actions, e.g. `[{{text}}]({{link}})` —
+  // the `{{link}}` placeholder stands in for the URL and `{{text}}` for the
+  // highlighted text. Empty = bare URL.
+  linkFormat: string;
   noteSeparator: string;
   useCustomTemplate: boolean;
   customTemplate: string;
@@ -445,6 +449,8 @@ export interface AnnotatorConfig {
   annotationQuickAction: AnnotationToolType | null;
   annotationToolbarItems: AnnotationToolType[];
   copyToNotebook: boolean;
+  // Copy the freshly-created highlight's link to the clipboard right away.
+  autoCopyAnnotationLink: boolean;
   noteExportConfig: NoteExportConfig;
 }
 
