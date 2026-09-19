@@ -13,6 +13,7 @@ import { useClipUrlIngress } from '@/hooks/useClipUrlIngress';
 import { useSettingsStore } from '@/store/settingsStore';
 import { checkForAppUpdates, checkAppReleaseNotes } from '@/helpers/updater';
 import { tauriHandleSetAlwaysOnTop } from '@/utils/window';
+import { trackReaderWindowGeometry } from '@/utils/readerWindowGeometry';
 import ClipSignInAlert from '@/components/ClipSignInAlert';
 import Reader from './components/Reader';
 
@@ -29,6 +30,13 @@ export default function Page() {
   useReadingWidget();
   useOpenShareLink();
   useClipUrlIngress();
+
+  useEffect(() => {
+    const ids = new URLSearchParams(window.location.search).get('ids');
+    if (ids) {
+      trackReaderWindowGeometry(ids);
+    }
+  }, []);
 
   useEffect(() => {
     const doCheckAppUpdates = async () => {

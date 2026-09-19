@@ -609,17 +609,11 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.plugin(
         tauri_plugin_window_state::Builder::default()
-            .map_label(|label| {
-                // Every book opens in a window whose label is unique per open
-                // (`reader-<n>-<ts>-<rand>`, see createReaderWindow in nav.ts),
-                // so per-label state could never be reused. Grouping them under
-                // one key makes each new reader window open where the last one
-                // was closed.
-                if label.starts_with("reader") {
-                    "reader"
-                } else {
-                    label
-                }
+            .with_filter(|label| {
+                // Every reader window gets a unique label per open and manages its
+                // own per-book geometry in the frontend (readerWindowGeometry.ts);
+                // tracking them here would only pile up dead per-label entries.
+                !label.starts_with("reader")
             })
             .build(),
     );

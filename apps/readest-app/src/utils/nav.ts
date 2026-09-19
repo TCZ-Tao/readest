@@ -5,9 +5,10 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isPWA, isTauriAppPlatform, isWebAppPlatform } from '@/services/environment';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { AppService } from '@/types/system';
+import { loadReaderWindowGeometry } from '@/utils/readerWindowGeometry';
 
 let readerWindowsCount = 0;
-const createReaderWindow = (appService: AppService, url: string) => {
+const createReaderWindow = (appService: AppService, url: string, ids?: string) => {
   const currentWindow = getCurrentWindow();
   const label = currentWindow.label;
   const newLabelPrefix = label === 'main' ? 'reader' : label;
@@ -21,11 +22,14 @@ const createReaderWindow = (appService: AppService, url: string) => {
     .toString(36)
     .padStart(4, '0');
   const uniqueId = `${readerWindowsCount}-${Date.now().toString(36)}-${rand}`;
+  // Open at the geometry this book's window had last time; only windows with
+  // no saved geometry fall back to the centered default size.
+  const geometry = ids ? loadReaderWindowGeometry(ids) : null;
   const win = new WebviewWindow(`${newLabelPrefix}-${uniqueId}`, {
     url,
-    width: 800,
-    height: 600,
-    center: true,
+    ...(geometry
+      ? { x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height }
+      : { width: 800, height: 600, center: true }),
     resizable: true,
     title: 'Readest',
     decorations: !!appService.isMacOSApp,
@@ -42,6 +46,9 @@ const createReaderWindow = (appService: AppService, url: string) => {
   win.once('tauri://created', () => {
     console.log('new window created');
     readerWindowsCount += 1;
+    if (geometry?.maximized) {
+      void win.maximize();
+    }
   });
   win.once('tauri://error', (e) => {
     console.error('error creating window', e);
@@ -60,7 +67,7 @@ export const showReaderWindow = (
   const params = new URLSearchParams(queryParams || '');
   params.set('ids', ids);
   const url = `/reader?${params.toString()}`;
-  createReaderWindow(appService, url);
+  createReaderWindow(appService, url, ids);
 };
 
 /**
