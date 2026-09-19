@@ -1,4 +1,4 @@
-import { BookFormat, PdfCropRect } from '@/types/book';
+import { BookFormat, PdfCropRect, PdfDrawing } from '@/types/book';
 import { Collection, Contributor, Identifier, LanguageMap } from '@/utils/book';
 import { configureZip } from '@/utils/zip';
 import { stripDuplicateMarker } from '@/utils/path';
@@ -134,6 +134,13 @@ export interface BookDoc {
   // cut on each side, or null to clear. Pairs with a renderer 'crop'
   // attribute change, which rebuilds the visible frames at the cropped size.
   setCrop?(crop: PdfCropRect | null): void;
+  // PDF only (makePDF): drawing-annotation support. setDrawings replaces the
+  // shape list rendered into each page's SVG layer; the coordinate helpers
+  // convert app-side screen captures to PDF user space (crop/rotate aware).
+  setDrawings?(drawings: PdfDrawing[]): void;
+  getDrawings?(): PdfDrawing[];
+  getPdfPageSize?(index: number): Promise<{ width: number; height: number }>;
+  convertToPdfPoint?(index: number, x: number, y: number, scale: number): Promise<[number, number]>;
 
   // Container access, present on EPUB. Recorded narration needs both: the SMIL
   // files as text, the audio as blobs. Hrefs are zip paths, as resolved on

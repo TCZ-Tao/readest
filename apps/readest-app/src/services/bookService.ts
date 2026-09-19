@@ -8,6 +8,7 @@ import {
   BookLookupIndex,
   BookNote,
   PairedAudiobook,
+  PdfDrawing,
   FIXED_LAYOUT_FORMATS,
   ImportBookOptions,
 } from '@/types/book';
@@ -18,6 +19,7 @@ import {
   getConfigFilename,
   getBookNavFilename,
   getTocOverrideFilename,
+  getPdfDrawingsFilename,
   INIT_BOOK_CONFIG,
   formatTitle,
   formatAuthors,
@@ -1122,6 +1124,28 @@ export async function loadTocOverride(fs: FileSystem, book: Book): Promise<TOCIt
 
 export async function saveTocOverride(fs: FileSystem, book: Book, toc: TOCItem[]): Promise<void> {
   await fs.writeFile(getTocOverrideFilename(book), 'Books', JSON.stringify(toc));
+}
+
+// User drawing annotations on PDF pages (line/rect/text). Per-book local JSON
+// keyed by page + PDF user-space coords; the PDF file itself is never touched.
+export async function loadPdfDrawings(fs: FileSystem, book: Book): Promise<PdfDrawing[] | null> {
+  try {
+    const path = getPdfDrawingsFilename(book);
+    if (!(await fs.exists(path, 'Books'))) return null;
+    const str = (await fs.readFile(path, 'Books', 'text')) as string;
+    const parsed = JSON.parse(str);
+    return Array.isArray(parsed) ? (parsed as PdfDrawing[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function savePdfDrawings(
+  fs: FileSystem,
+  book: Book,
+  drawings: PdfDrawing[],
+): Promise<void> {
+  await fs.writeFile(getPdfDrawingsFilename(book), 'Books', JSON.stringify(drawings));
 }
 
 export async function fetchBookDetails(

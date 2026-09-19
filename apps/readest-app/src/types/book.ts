@@ -276,6 +276,28 @@ export interface PdfCropRect {
   bottom: number;
 }
 
+/**
+ * PDF drawing annotation (line/rect/text), stored per book in
+ * `pdf-drawings.json`. The PDF file itself is never modified. All geometry is
+ * in PDF user space so shapes stay anchored to page content across zoom,
+ * spread, crop and rotation changes.
+ */
+export interface PdfDrawing {
+  id: string;
+  /** 0-based page index. */
+  pageIndex: number;
+  type: 'line' | 'rect' | 'text';
+  /** User-space points: line/rect = two opposite corners, text = top-left. */
+  points: [number, number][];
+  /** type=text only. Single line. */
+  text?: string;
+  color: string;
+  /** User-space units; line/rect only. */
+  strokeWidth?: number;
+  /** User-space units; text only. */
+  fontSize?: number;
+}
+
 export interface BookStyle {
   zoomLevel: number;
   paragraphMargin: number;

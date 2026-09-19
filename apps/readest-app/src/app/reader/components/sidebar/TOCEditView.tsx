@@ -271,8 +271,7 @@ const TOCEditView: React.FC<{
     if (!progress) return;
     const pageIndex = progress.index;
     const maxId = rows.reduce((acc, { item }) => Math.max(acc, item.id as number), 0);
-    const label =
-      getSelectionLabel() ?? _('Page {{page}}', { page: pageIndex + 1 });
+    const label = getSelectionLabel() ?? _('Page {{page}}', { page: pageIndex + 1 });
     onCommit(
       insertTocItemAfterHref(
         toc,

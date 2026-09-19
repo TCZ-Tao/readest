@@ -279,6 +279,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       if (book.format === 'PDF') {
         const tocOverride = await appService.loadTocOverride(book);
         if (tocOverride) bookDoc.toc = normalizeTocTree(tocOverride);
+        // PDF drawing annotations: populate the book's per-page SVG layers
+        // before the view opens. Local per-book data; the file is untouched.
+        if (bookDoc.setDrawings) {
+          const drawings = await appService.loadPdfDrawings(book);
+          if (drawings?.length) bookDoc.setDrawings(drawings);
+        }
       }
       if (!bookDoc.metadata.title && file) {
         bookDoc.metadata.title = getBaseFilename(file.name);

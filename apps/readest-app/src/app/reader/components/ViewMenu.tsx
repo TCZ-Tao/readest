@@ -5,7 +5,14 @@ import { useRouter } from 'next/navigation';
 import { BiMoon, BiSun } from 'react-icons/bi';
 import { PiGear } from 'react-icons/pi';
 import { TbSunMoon } from 'react-icons/tb';
-import { MdZoomOut, MdZoomIn, MdCheck, MdInfoOutline, MdOutlineSensors, MdCrop } from 'react-icons/md';
+import {
+  MdZoomOut,
+  MdZoomIn,
+  MdCheck,
+  MdInfoOutline,
+  MdOutlineSensors,
+  MdCrop,
+} from 'react-icons/md';
 import { MdRemove, MdAdd, MdContrast } from 'react-icons/md';
 import { MdSync, MdSyncProblem } from 'react-icons/md';
 import { IoMdExpand } from 'react-icons/io';

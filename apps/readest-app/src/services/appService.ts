@@ -17,7 +17,14 @@ import {
 } from '@/types/system';
 import { DatabaseOpts, DatabaseService } from '@/types/database';
 import { SchemaType } from '@/services/database/migrate';
-import { Book, BookConfig, BookContent, ImportBookOptions, ViewSettings } from '@/types/book';
+import {
+  Book,
+  BookConfig,
+  BookContent,
+  ImportBookOptions,
+  PdfDrawing,
+  ViewSettings,
+} from '@/types/book';
 import type { BookNav } from '@/services/nav';
 import type { TOCItem } from '@/libs/document';
 import { getLibraryFilename, getLibraryBackupFilename } from '@/utils/book';
@@ -644,6 +651,14 @@ export abstract class BaseAppService implements AppService {
 
   async saveTocOverride(book: Book, toc: TOCItem[]) {
     return BookSvc.saveTocOverride(this.fs, book, toc);
+  }
+
+  async loadPdfDrawings(book: Book) {
+    return BookSvc.loadPdfDrawings(this.fs, book);
+  }
+
+  async savePdfDrawings(book: Book, drawings: PdfDrawing[]) {
+    return BookSvc.savePdfDrawings(this.fs, book, drawings);
   }
 
   async loadFeeds(): Promise<RssFeed[]> {

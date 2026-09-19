@@ -29,7 +29,10 @@ const NO_CROP: PdfCropRect = { left: 0, top: 0, right: 0, bottom: 0 };
 // Keep at least 5% of the page on every side so the crop can't collapse.
 const MIN_CROP = 0.05;
 
-const DRAG_AXES: Record<DragMode, { left?: boolean; right?: boolean; top?: boolean; bottom?: boolean }> = {
+const DRAG_AXES: Record<
+  DragMode,
+  { left?: boolean; right?: boolean; top?: boolean; bottom?: boolean }
+> = {
   move: {},
   left: { left: true },
   right: { right: true },
@@ -47,7 +50,10 @@ const HANDLES: { mode: DragMode; className: string }[] = [
   { mode: 'bl', className: 'bottom-0 left-0 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize' },
   { mode: 'br', className: 'bottom-0 right-0 translate-x-1/2 translate-y-1/2 cursor-nwse-resize' },
   { mode: 'top', className: 'left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 cursor-ns-resize' },
-  { mode: 'bottom', className: 'bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 cursor-ns-resize' },
+  {
+    mode: 'bottom',
+    className: 'bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 cursor-ns-resize',
+  },
   { mode: 'left', className: 'left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize' },
   { mode: 'right', className: 'right-0 top-1/2 translate-x-1/2 -translate-y-1/2 cursor-ew-resize' },
 ];

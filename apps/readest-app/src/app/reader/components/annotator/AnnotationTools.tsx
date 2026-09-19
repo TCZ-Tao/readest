@@ -3,36 +3,43 @@ import { FiSearch } from 'react-icons/fi';
 import { FiCopy } from 'react-icons/fi';
 import { FiLink } from 'react-icons/fi';
 import { FiShare } from 'react-icons/fi';
+import { FiSlash } from 'react-icons/fi';
+import { FiSquare } from 'react-icons/fi';
+import { FiType } from 'react-icons/fi';
 import { PiHighlighterFill } from 'react-icons/pi';
 import { LuBookA } from 'react-icons/lu';
 import { BsPencilSquare } from 'react-icons/bs';
 import { BsTranslate } from 'react-icons/bs';
 import { FaHeadphones } from 'react-icons/fa6';
 import { IoIosBuild } from 'react-icons/io';
-import { AnnotationToolType } from '@/types/annotator';
+import { AnnotationToolType, PdfDrawToolType } from '@/types/annotator';
 import { stubTranslation as _ } from '@/utils/misc';
 
-type AnnotationToolButton = {
-  type: AnnotationToolType;
+type AnnotationToolButton<T extends AnnotationToolType = AnnotationToolType> = {
+  type: T;
   label: string;
   tooltip: string;
   Icon: IconType;
   quickAction?: boolean;
 };
 
-function createAnnotationToolButtons<T extends AnnotationToolType>(
-  buttons: AnnotationToolType extends T
-    ? {
-        [K in T]: {
-          type: K;
-          label: string;
-          tooltip: string;
-          Icon: IconType;
-          quickAction?: boolean;
-        };
-      }[T][]
-    : never,
-): AnnotationToolButton[] {
+// The selection popup's tools are a closed set keyed by AnnotationToolType
+// minus the PDF drawing tools, which are page-drawing modes rather than
+// selection actions — the factory's exhaustiveness check runs against the
+// selection subset only.
+type SelectionToolType = Exclude<AnnotationToolType, PdfDrawToolType>;
+
+function createAnnotationToolButtons<T extends SelectionToolType>(
+  buttons: {
+    [K in T]: {
+      type: K;
+      label: string;
+      tooltip: string;
+      Icon: IconType;
+      quickAction?: boolean;
+    };
+  }[T][],
+): AnnotationToolButton<T>[] {
   return buttons;
 }
 
@@ -109,3 +116,36 @@ export const annotationToolButtons = createAnnotationToolButtons([
 export const annotationToolQuickActions = annotationToolButtons.filter(
   (button) => button.quickAction,
 );
+
+// PDF page-drawing tools (Acrobat-style line/rect/text). One-shot: armed from
+// the quick-action menu, they capture the next page gesture and disarm after
+// the stroke commits. PDF books only, hence excluded from the selection
+// popup's tool set above.
+export const pdfDrawingToolButtons: AnnotationToolButton<PdfDrawToolType>[] = [
+  {
+    type: 'pdf-line',
+    label: _('Line'),
+    tooltip: _('Draw a line on the page'),
+    Icon: FiSlash,
+    quickAction: true,
+  },
+  {
+    type: 'pdf-rect',
+    label: _('Rectangle'),
+    tooltip: _('Draw a rectangle on the page'),
+    Icon: FiSquare,
+    quickAction: true,
+  },
+  {
+    type: 'pdf-text',
+    label: _('Text'),
+    tooltip: _('Add a text annotation on the page'),
+    Icon: FiType,
+    quickAction: true,
+  },
+];
+
+export const allAnnotationToolButtons: AnnotationToolButton[] = [
+  ...annotationToolButtons,
+  ...pdfDrawingToolButtons,
+];

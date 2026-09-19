@@ -16,7 +16,7 @@ import { useTrafficLight } from '@/hooks/useTrafficLight';
 import { useResponsiveSize } from '@/hooks/useResponsiveSize';
 import { useSpatialNavigation } from '@/app/reader/hooks/useSpatialNavigation';
 import { getHighlightColorHex } from '../utils/annotatorUtil';
-import { annotationToolQuickActions } from './annotator/AnnotationTools';
+import { annotationToolQuickActions, allAnnotationToolButtons } from './annotator/AnnotationTools';
 import { AnnotationToolType } from '@/types/annotator';
 import { saveViewSettings } from '@/helpers/settings';
 import { getHeaderTriggerHeight } from '@/utils/insets';
@@ -94,7 +94,7 @@ const HeaderBar: React.FC<HeaderBarProps> = ({
 
   const enableAnnotationQuickActions = viewSettings?.enableAnnotationQuickActions;
   const annotationQuickActionButton =
-    annotationToolQuickActions.find(
+    allAnnotationToolButtons.find(
       (button) => button.type === viewSettings?.annotationQuickAction,
     ) || annotationToolQuickActions[0]!;
   const annotationQuickAction = viewSettings?.annotationQuickAction;
@@ -296,6 +296,7 @@ const HeaderBar: React.FC<HeaderBarProps> = ({
               <QuickActionMenu
                 selectedAction={viewSettings.annotationQuickAction}
                 onActionSelect={handleAnnotationQuickActionSelect}
+                isPdf={bookData?.book?.format === 'PDF'}
               />
             </Dropdown>
           )}

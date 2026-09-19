@@ -57,6 +57,9 @@ export const getBookNavFilename = (book: Book) => {
 export const getTocOverrideFilename = (book: Book) => {
   return `${book.hash}/toc-override.json`;
 };
+export const getPdfDrawingsFilename = (book: Book) => {
+  return `${book.hash}/pdf-drawings.json`;
+};
 export const isBookFile = (filename: string) => {
   return Object.values(EXTS).includes(filename.split('.').pop()!);
 };

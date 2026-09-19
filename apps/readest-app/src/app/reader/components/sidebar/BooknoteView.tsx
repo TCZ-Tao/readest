@@ -29,6 +29,7 @@ import {
 } from '../../utils/annotatorUtil';
 import AnnotationsToolbar from './AnnotationsToolbar';
 import BooknoteItem from './BooknoteItem';
+import PdfDrawingsSection from './PdfDrawingsSection';
 import EmptyState from '../EmptyState';
 
 type FlatBooknoteRow =
@@ -367,6 +368,11 @@ const BooknoteView: React.FC<{
   // importing notes) would leave Virtuoso stuck at the initial 400px until a
   // remount (tab switch) occurs.
   const isEmpty = sortedGroups.length === 0;
+  // The page-drawing tools' output has no CFI, so it can't flow through the
+  // booknotes machinery; it gets its own section above the list (the height
+  // measurement reads listHostRef's offset, which accounts for it).
+  const isPdfBook =
+    useBookDataStore((state) => state.booksData[bookKey.split('-')[0]!])?.book?.format === 'PDF';
 
   return (
     <div
@@ -376,6 +382,7 @@ const BooknoteView: React.FC<{
       tabIndex={type === 'annotation' ? -1 : undefined}
       aria-label={type === 'annotation' ? _('Annotations') : undefined}
     >
+      {type === 'annotation' && isPdfBook && <PdfDrawingsSection bookKey={bookKey} />}
       {type === 'annotation' && (
         <AnnotationsToolbar
           filterKind={filterKind}

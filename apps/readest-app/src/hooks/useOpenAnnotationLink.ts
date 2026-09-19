@@ -7,11 +7,7 @@ import { useLibraryStore } from '@/store/libraryStore';
 import { useReaderStore } from '@/store/readerStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { isTauriAppPlatform } from '@/services/environment';
-import {
-  navigateToReader,
-  showReaderWindow,
-  focusExistingReaderWindow,
-} from '@/utils/nav';
+import { navigateToReader, showReaderWindow, focusExistingReaderWindow } from '@/utils/nav';
 import { eventDispatcher } from '@/utils/event';
 import { parseAnnotationDeepLink, AnnotationDeepLink } from '@/utils/deeplink';
 import { isMainAppWindow } from '@/utils/window';
@@ -104,7 +100,11 @@ export function useOpenAnnotationLink() {
         // fail open: each window opening its own copy beats losing the link.)
         const isMain = getCurrentWindow().label === 'main';
         if (!isMain && (await getAllWindows()).some((window) => window.label === 'main')) return;
-        showReaderWindow(appService, [bookHash], cfi ? `cfi=${encodeURIComponent(cfi)}` : undefined);
+        showReaderWindow(
+          appService,
+          [bookHash],
+          cfi ? `cfi=${encodeURIComponent(cfi)}` : undefined,
+        );
         return;
       }
 

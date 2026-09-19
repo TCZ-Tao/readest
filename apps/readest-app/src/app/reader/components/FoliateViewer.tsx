@@ -105,6 +105,7 @@ import KOSyncConflictResolver from './KOSyncResolver';
 import ImageViewer from './ImageViewer';
 import TableViewer from './TableViewer';
 import PdfCropOverlay from './PdfCropOverlay';
+import PdfDrawOverlay from './PdfDrawOverlay';
 import { getTTSMiniPlayerClearance } from '../utils/ttsMiniPlayerPosition';
 
 declare global {
@@ -1159,6 +1160,13 @@ const FoliateViewer: React.FC<{
       {bookData?.book?.format === 'PDF' && cropMode && (
         <PdfCropOverlay bookKey={bookKey} onClose={() => setCropMode(false)} />
       )}
+      {bookData?.book?.format === 'PDF' &&
+        viewSettings?.enableAnnotationQuickActions &&
+        (viewSettings.annotationQuickAction === 'pdf-line' ||
+          viewSettings.annotationQuickAction === 'pdf-rect' ||
+          viewSettings.annotationQuickAction === 'pdf-text') && (
+          <PdfDrawOverlay bookKey={bookKey} tool={viewSettings.annotationQuickAction} />
+        )}
       <div
         ref={containerRef}
         role='main'
