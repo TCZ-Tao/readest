@@ -7,8 +7,11 @@ import {
   applyTocDrop,
   deleteTocItem,
   ensureTocIds,
+  findActiveTocHref,
   flattenTocForEdit,
+  insertTocItemAfterHref,
   makePageTocItem,
+  normalizeTocTree,
   renameTocItem,
 } from '@/app/reader/components/sidebar/tocEditTree';
 
@@ -127,5 +130,74 @@ describe('renameTocItem / deleteTocItem / appendTocItem', () => {
     expect(result[result.length - 1]).toBe(item);
     expect(item.href).toBe('11');
     expect(item.index).toBe(11);
+  });
+});
+
+describe('empty subitems cleanup', () => {
+  it('moving the only child out clears the parent subitems', () => {
+    const nested = [node(1, 'A', [node(2, 'B')])];
+    const result = applyTocDrop(nested, 2, 1, 'after')!;
+    expect(labels(result)).toBe('A(0) B(0)');
+    expect(result[0]!.subitems).toBeUndefined();
+  });
+
+  it('deleting the only child clears the parent subitems', () => {
+    const nested = [node(1, 'A', [node(2, 'B')])];
+    const result = deleteTocItem(nested, 2);
+    expect(labels(result)).toBe('A(0)');
+    expect(result[0]!.subitems).toBeUndefined();
+  });
+
+  it('normalizes empty subitems arrays from stale files', () => {
+    const stale = JSON.parse('[{"id":1,"label":"A","href":"#1","index":1,"subitems":[]}]');
+    const result = normalizeTocTree(stale as TOCItem[]);
+    expect(result[0]!.subitems).toBeUndefined();
+  });
+});
+
+describe('insertTocItemAfterHref / findActiveTocHref', () => {
+  it('inserts as first child when the target has children', () => {
+    const item = makePageTocItem(11, 99, 'X');
+    const result = insertTocItemAfterHref(tree(), '#2', item);
+    expect(labels(result)).toBe('A(0) B(0) X(1) C(1) D(2) E(1) F(0)');
+  });
+
+  it('inserts as a sibling directly below a leaf', () => {
+    const item = makePageTocItem(11, 99, 'X');
+    const result = insertTocItemAfterHref(tree(), '#6', item);
+    expect(labels(result)).toBe('A(0) B(0) C(1) D(2) E(1) F(0) X(0)');
+  });
+
+  it('falls back to root append when the href is missing', () => {
+    const item = makePageTocItem(11, 99, 'X');
+    expect(labels(insertTocItemAfterHref(tree(), '#404', item))).toBe(
+      'A(0) B(0) C(1) D(2) E(1) F(0) X(0)',
+    );
+    expect(labels(insertTocItemAfterHref(tree(), null, item))).toBe(
+      'A(0) B(0) C(1) D(2) E(1) F(0) X(0)',
+    );
+  });
+
+  it('finds the entry containing the reading position', () => {
+    // Markers on pages 3 and 21 (0-based 2 and 20): reading page 10 (idx 9)
+    // sits inside the first marker; page 30 sits inside the second.
+    const markers = [makePageTocItem(2, 1, 'P3'), makePageTocItem(20, 2, 'P21')];
+    expect(findActiveTocHref(markers, 9)).toBe('2');
+    expect(findActiveTocHref(markers, 20)).toBe('20');
+    expect(findActiveTocHref(markers, 100)).toBe('20');
+    expect(findActiveTocHref(markers, 0)).toBeNull();
+    expect(findActiveTocHref([], 5)).toBeNull();
+  });
+
+  it('stacks successive page markers flat, in reading order', () => {
+    const first = makePageTocItem(2, 1, 'P3');
+    let items = insertTocItemAfterHref([], '2', first); // no active yet → append
+    expect(labels(items)).toBe('P3(0)');
+    const second = makePageTocItem(20, 2, 'P21');
+    items = insertTocItemAfterHref(items, findActiveTocHref(items, 20), second);
+    expect(labels(items)).toBe('P3(0) P21(0)');
+    const third = makePageTocItem(9, 3, 'P10');
+    items = insertTocItemAfterHref(items, findActiveTocHref(items, 9), third);
+    expect(labels(items)).toBe('P3(0) P10(0) P21(0)');
   });
 });

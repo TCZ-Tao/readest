@@ -23,6 +23,7 @@ import type { FileSystem } from '@/types/system';
 import { isFeedBookUrl, parseFeedBookUrl } from '@/services/rss/feedBookUrl';
 import { openFeedBookDoc } from '@/services/rss/feedReader';
 import { computeBookNav, hydrateBookNav, isBookNavCacheCurrent, updateToc } from '@/services/nav';
+import { normalizeTocTree } from '@/app/reader/components/sidebar/tocEditTree';
 import { formatTitle, getMetadataHash, getPrimaryLanguage } from '@/utils/book';
 import { getBaseFilename } from '@/utils/path';
 import { SUPPORTED_LANGNAMES } from '@/services/constants';
@@ -273,9 +274,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       );
       // PDF TOC editor: replace the file's outline with the user-edited tree.
       // Applied after updateToc, which early-returns for pre-paginated books.
+      // normalizeTocTree cleans empty subitems arrays written by older builds
+      // (a moved-out last child used to leave a phantom collapse triangle).
       if (book.format === 'PDF') {
         const tocOverride = await appService.loadTocOverride(book);
-        if (tocOverride) bookDoc.toc = tocOverride;
+        if (tocOverride) bookDoc.toc = normalizeTocTree(tocOverride);
       }
       if (!bookDoc.metadata.title && file) {
         bookDoc.metadata.title = getBaseFilename(file.name);

@@ -46,6 +46,16 @@ export const flattenTocForEdit = (items: TOCItem[], depth = 0): FlatTocRow[] => 
   return rows;
 };
 
+// Drop empty `subitems` arrays. An empty array is falsy-adjacent everywhere
+// except the expander check (`item.subitems && …`), where it still renders a
+// collapse triangle for a node with no children — so moving or deleting a
+// node's last child must clean the parent up.
+export const normalizeTocTree = (items: TOCItem[]): TOCItem[] =>
+  items.map((item) => {
+    const subitems = item.subitems?.length ? normalizeTocTree(item.subitems) : undefined;
+    return subitems ? { ...item, subitems } : { ...item, subitems: undefined };
+  });
+
 // Rebuild a tree from a flat list where every row's depth differs from its
 // predecessor's by at most +1 (callers clamp depths before calling this).
 // Every node is shallow-copied so insertion never mutates the input tree.
@@ -62,7 +72,7 @@ const rebuildFromRows = (rows: FlatTocRow[]): TOCItem[] => {
     }
     stack[depth] = node;
   }
-  return root;
+  return normalizeTocTree(root);
 };
 
 const collectIds = (item: TOCItem, acc: Set<TOCItem['id']>) => {
@@ -142,14 +152,54 @@ export const renameTocItem = (items: TOCItem[], id: TOCItem['id'], label: string
   mapTree(items, (item) => (item.id === id ? { ...item, label } : item));
 
 export const deleteTocItem = (items: TOCItem[], id: TOCItem['id']): TOCItem[] =>
-  items
-    .filter((item) => item.id !== id)
-    .map((item) =>
-      item.subitems?.length ? { ...item, subitems: deleteTocItem(item.subitems, id) } : item,
-    );
+  normalizeTocTree(
+    items
+      .filter((item) => item.id !== id)
+      .map((item) =>
+        item.subitems?.length ? { ...item, subitems: deleteTocItem(item.subitems, id) } : item,
+      ),
+  );
 
 // Append a new root-level item; the reader drags it into its final place.
 export const appendTocItem = (items: TOCItem[], item: TOCItem): TOCItem[] => [...items, item];
+
+// Insert a new item directly below where the "current position" row renders —
+// right under the item containing the current page. A leaf gets it as a
+// sibling directly below; a parent gets it as its first child (the position
+// row also renders above that item's children). Falls back to a root-level
+// append when there is no such item (empty tree, or the position precedes
+// every entry).
+export const insertTocItemAfterHref = (
+  items: TOCItem[],
+  afterHref: string | null | undefined,
+  newItem: TOCItem,
+): TOCItem[] => {
+  const rows = flattenTocForEdit(items);
+  const idx = afterHref
+    ? rows.findIndex((row) => row.item.href && row.item.href === afterHref)
+    : -1;
+  if (idx === -1) return appendTocItem(items, newItem);
+  const target = rows[idx]!;
+  const depth = target.item.subitems?.length ? target.depth + 1 : target.depth;
+  rows.splice(idx + 1, 0, { item: newItem, depth });
+  return rebuildFromRows(rows);
+};
+
+// The TOC item the current PDF page sits in: the entry with the greatest page
+// index not ahead of the reading position (later rows win ties, so a deeper
+// marker at the same page beats its ancestor). Null when none qualifies.
+export const findActiveTocHref = (items: TOCItem[], pageIndex: number): string | null => {
+  let bestIndex = -1;
+  let bestHref: string | null = null;
+  for (const { item } of flattenTocForEdit(items)) {
+    if (item.index === undefined || item.index > pageIndex) continue;
+    if (item.index >= bestIndex) {
+      bestIndex = item.index;
+      bestHref = item.href || null;
+    }
+  }
+  return bestHref;
+};
 
 // A user-added entry pointing at a physical PDF page. A bare number is the
 // page-index form of a PDF TOC href (see foliate-js pdf.js resolveHref).

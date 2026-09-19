@@ -20,10 +20,11 @@ import { TOCItem } from '@/libs/document';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useReaderStore } from '@/store/readerStore';
 import {
-  appendTocItem,
   applyTocDrop,
   deleteTocItem,
+  findActiveTocHref,
   flattenTocForEdit,
+  insertTocItemAfterHref,
   makePageTocItem,
   renameTocItem,
   TocDropPosition,
@@ -250,18 +251,36 @@ const TOCEditView: React.FC<{
     [toc, onCommit],
   );
 
+  // The current book selection, if any, becomes the new entry's label; capped
+  // so a long highlight stays a usable TOC title.
+  const getSelectionLabel = useCallback((): string | null => {
+    const view = useReaderStore.getState().getView(bookKey);
+    if (!view) return null;
+    for (const { doc } of view.renderer.getContents()) {
+      const selection = doc?.getSelection?.();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) continue;
+      const text = selection.getRangeAt(0).toString().replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      return text.length > 50 ? `${text.slice(0, 50)}…` : text;
+    }
+    return null;
+  }, [bookKey]);
+
   const handleAddCurrentPage = useCallback(() => {
     const progress = useReaderStore.getState().getProgress(bookKey);
     if (!progress) return;
     const pageIndex = progress.index;
     const maxId = rows.reduce((acc, { item }) => Math.max(acc, item.id as number), 0);
+    const label =
+      getSelectionLabel() ?? _('Page {{page}}', { page: pageIndex + 1 });
     onCommit(
-      appendTocItem(
+      insertTocItemAfterHref(
         toc,
-        makePageTocItem(pageIndex, maxId + 1, _('Page {{page}}', { page: pageIndex + 1 })),
+        findActiveTocHref(toc, pageIndex),
+        makePageTocItem(pageIndex, maxId + 1, label),
       ),
     );
-  }, [bookKey, toc, rows, onCommit, _]);
+  }, [bookKey, toc, rows, onCommit, _, getSelectionLabel]);
 
   return (
     <div className='flex flex-col' style={{ height: containerHeight }}>
