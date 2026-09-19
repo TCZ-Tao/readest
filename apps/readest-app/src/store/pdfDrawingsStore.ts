@@ -5,6 +5,12 @@ import { AppService } from '@/types/system';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
 
+// Pen presets shared by the draw overlay and the shape editor toolbars.
+export const PDF_STROKE_WIDTHS = [1, 2, 4, 8];
+export const PDF_FONT_SIZES = [12, 16, 24, 32];
+// Light tints for the text background, ordered like the highlight palette.
+export const PDF_BACKGROUND_COLORS = ['#fef08a', '#bbf7d0', '#bfdbfe', '#ddd6fe', '#e5e7eb'];
+
 interface PdfDrawingsState {
   drawingsByBook: Record<string, PdfDrawing[]>;
   setDrawings: (bookKey: string, drawings: PdfDrawing[]) => void;
@@ -12,6 +18,16 @@ interface PdfDrawingsState {
   // shape editor to select a specific drawing; consumed (cleared) by it.
   pendingSelectId: string | null;
   setPendingSelect: (id: string | null) => void;
+  // Current pen settings shared by the draw overlay (new strokes) and the
+  // shape editor (defaults when nothing is selected).
+  penStrokeWidth: number;
+  penFontSize: number;
+  penBackground?: string;
+  penArrow: boolean;
+  setPenStrokeWidth: (w: number) => void;
+  setPenFontSize: (size: number) => void;
+  setPenBackground: (color?: string) => void;
+  setPenArrow: (arrow: boolean) => void;
 }
 
 // React-side mirror of the foliate book's drawing list (book.getDrawings()).
@@ -24,6 +40,14 @@ export const usePdfDrawingsStore = create<PdfDrawingsState>((set) => ({
     set((state) => ({ drawingsByBook: { ...state.drawingsByBook, [bookKey]: drawings } })),
   pendingSelectId: null,
   setPendingSelect: (id) => set({ pendingSelectId: id }),
+  penStrokeWidth: 2,
+  penFontSize: 12,
+  penBackground: undefined,
+  penArrow: false,
+  setPenStrokeWidth: (w) => set({ penStrokeWidth: w }),
+  setPenFontSize: (size) => set({ penFontSize: size }),
+  setPenBackground: (color) => set({ penBackground: color }),
+  setPenArrow: (arrow) => set({ penArrow: arrow }),
 }));
 
 // Seed the store from the foliate book (the truth loaded at open time).

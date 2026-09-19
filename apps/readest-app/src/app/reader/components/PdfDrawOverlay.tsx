@@ -1,13 +1,20 @@
 import clsx from 'clsx';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FiCornerUpLeft } from 'react-icons/fi';
+import { FiArrowUpRight, FiCornerUpLeft } from 'react-icons/fi';
 
 import { DEFAULT_HIGHLIGHT_COLORS, PdfDrawing } from '@/types/book';
 import { PdfDrawToolType } from '@/types/annotator';
 import { useEnv } from '@/context/EnvContext';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
-import { applyPdfDrawings, seedPdfDrawings, usePdfDrawingsStore } from '@/store/pdfDrawingsStore';
+import {
+  applyPdfDrawings,
+  PDF_BACKGROUND_COLORS,
+  PDF_FONT_SIZES,
+  PDF_STROKE_WIDTHS,
+  seedPdfDrawings,
+  usePdfDrawingsStore,
+} from '@/store/pdfDrawingsStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { saveViewSettings } from '@/helpers/settings';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -41,11 +48,6 @@ interface TextInputState {
   value: string;
 }
 
-// Default text size and stroke width in PDF user-space units (pt); on screen
-// they multiply by the current page scale so they track zoom like real PDF
-// annotations.
-const DEFAULT_FONT_SIZE = 12;
-const DEFAULT_STROKE_WIDTH = 2;
 // A drag shorter than this is a tap, not a stroke.
 const MIN_STROKE_PX = 4;
 
@@ -70,6 +72,14 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
   );
 
   const [color, setColor] = useState(defaultColor);
+  const penStrokeWidth = usePdfDrawingsStore((s) => s.penStrokeWidth);
+  const setPenStrokeWidth = usePdfDrawingsStore((s) => s.setPenStrokeWidth);
+  const penFontSize = usePdfDrawingsStore((s) => s.penFontSize);
+  const setPenFontSize = usePdfDrawingsStore((s) => s.setPenFontSize);
+  const penBackground = usePdfDrawingsStore((s) => s.penBackground);
+  const setPenBackground = usePdfDrawingsStore((s) => s.setPenBackground);
+  const penArrow = usePdfDrawingsStore((s) => s.penArrow);
+  const setPenArrow = usePdfDrawingsStore((s) => s.setPenArrow);
   const [pages, setPages] = useState<PageRect[]>([]);
   const [preview, setPreview] = useState<StrokeState | null>(null);
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
@@ -205,17 +215,40 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
           [x2, y2],
         ],
         color,
-        strokeWidth: DEFAULT_STROKE_WIDTH,
+        strokeWidth: penStrokeWidth,
+        ...(toolRef.current === 'pdf-line' && penArrow ? { arrow: true } : {}),
       });
     },
-    [color, commitDrawing, bookKey, getGeometry, getView],
+    [color, commitDrawing, bookKey, getGeometry, getView, penArrow, penStrokeWidth],
   );
 
   const onStrokeMove = useCallback((e: PointerEvent) => {
     const stroke = strokeRef.current;
     if (!stroke) return;
-    stroke.endX = e.clientX - stroke.offsetX;
-    stroke.endY = e.clientY - stroke.offsetY;
+    let endX = e.clientX - stroke.offsetX;
+    let endY = e.clientY - stroke.offsetY;
+    if (e.ctrlKey) {
+      if (toolRef.current === 'pdf-line') {
+        // Snap the endpoint to the nearest 45° direction from the anchor.
+        const ddx = endX - stroke.startX;
+        const ddy = endY - stroke.startY;
+        const length = Math.hypot(ddx, ddy);
+        if (length > 0) {
+          const angle = Math.round(Math.atan2(ddy, ddx) / (Math.PI / 4)) * (Math.PI / 4);
+          endX = stroke.startX + Math.cos(angle) * length;
+          endY = stroke.startY + Math.sin(angle) * length;
+        }
+      } else {
+        // Lock the rectangle to a square from its anchor corner.
+        const sw = endX - stroke.startX;
+        const sh = endY - stroke.startY;
+        const size = Math.max(Math.abs(sw), Math.abs(sh));
+        endX = stroke.startX + (sw < 0 ? -1 : 1) * size;
+        endY = stroke.startY + (sh < 0 ? -1 : 1) * size;
+      }
+    }
+    stroke.endX = endX;
+    stroke.endY = endY;
     setPreview({ ...stroke });
   }, []);
 
@@ -327,18 +360,19 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
       points: [[x, y]],
       text,
       color,
-      fontSize: DEFAULT_FONT_SIZE,
+      background: penBackground,
+      fontSize: penFontSize,
     });
-  }, [bookKey, color, commitDrawing, getGeometry, getView, textInput]);
+  }, [bookKey, color, commitDrawing, getGeometry, getView, penBackground, penFontSize, textInput]);
 
   if (!isPdf) return null;
 
   const renderPageLayer = (page: PageRect) => {
     const stroke = preview?.pageIndex === page.index ? preview : null;
     const scale = geometryCache.current.get(page.index);
-    const strokeWidth = DEFAULT_STROKE_WIDTH * (scale ? page.width / scale.width : 1);
+    const strokeWidth = penStrokeWidth * (scale ? page.width / scale.width : 1);
     const input = textInput?.pageIndex === page.index ? textInput : null;
-    const inputFontSize = DEFAULT_FONT_SIZE * (scale ? page.width / scale.width : 1);
+    const inputFontSize = penFontSize * (scale ? page.width / scale.width : 1);
     return (
       <div
         key={page.index}
@@ -348,15 +382,39 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
         {stroke && (
           <svg className='pointer-events-none absolute left-0 top-0 h-full w-full'>
             {tool === 'pdf-line' ? (
-              <line
-                x1={stroke.startX}
-                y1={stroke.startY}
-                x2={stroke.endX}
-                y2={stroke.endY}
-                stroke={color}
-                strokeWidth={strokeWidth}
-                strokeLinecap='round'
-              />
+              <>
+                <line
+                  x1={stroke.startX}
+                  y1={stroke.startY}
+                  x2={stroke.endX}
+                  y2={stroke.endY}
+                  stroke={color}
+                  strokeWidth={strokeWidth}
+                  strokeLinecap='round'
+                />
+                {penArrow &&
+                  stroke.endX !== stroke.startX &&
+                  stroke.endY !== stroke.startY &&
+                  [1, -1].map((sign) => {
+                    const angle =
+                      Math.atan2(stroke.endY - stroke.startY, stroke.endX - stroke.startX) +
+                      Math.PI +
+                      sign * 0.5;
+                    const wing = Math.max(8, strokeWidth * 3);
+                    return (
+                      <line
+                        key={sign}
+                        x1={stroke.endX}
+                        y1={stroke.endY}
+                        x2={stroke.endX + Math.cos(angle) * wing}
+                        y2={stroke.endY + Math.sin(angle) * wing}
+                        stroke={color}
+                        strokeWidth={strokeWidth}
+                        strokeLinecap='round'
+                      />
+                    );
+                  })}
+              </>
             ) : (
               <rect
                 x={Math.min(stroke.startX, stroke.endX)}
@@ -373,12 +431,13 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
         {input && (
           <input
             autoFocus
-            className='eink-bordered absolute rounded-sm border bg-base-100/80 px-1 outline-hidden'
+            className='eink-bordered absolute rounded-sm border px-1 outline-hidden'
             style={{
               left: input.x,
               top: input.y,
               width: Math.min(page.width * 0.6, 320),
               color,
+              background: penBackground ?? 'color-mix(in srgb, var(--color-base-100) 80%, transparent)',
               fontSize: inputFontSize,
               lineHeight: 1.2,
             }}
@@ -429,6 +488,35 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
             ? _('Click to place text on the page')
             : _('Drag to draw on the page')}
         </span>
+        {PDF_STROKE_WIDTHS.map((w) => (
+          <button
+            key={w}
+            title={_('Stroke Width') + ` ${w}`}
+            className={clsx(
+              'flex h-6 w-6 items-center justify-center rounded-full',
+              penStrokeWidth === w ? 'bg-base-300' : '',
+            )}
+            onClick={() => setPenStrokeWidth(w)}
+          >
+            <span
+              className='rounded-full bg-base-content'
+              style={{ width: 2 + w * 1.2, height: 2 + w * 1.2 }}
+            />
+          </button>
+        ))}
+        {tool === 'pdf-line' && (
+          <button
+            title={_('Arrow')}
+            className={clsx(
+              'flex h-6 w-6 items-center justify-center rounded-full',
+              penArrow ? 'bg-base-300' : '',
+            )}
+            onClick={() => setPenArrow(!penArrow)}
+          >
+            <FiArrowUpRight />
+          </button>
+        )}
+        <div className='bg-base-content/10 mx-1 h-5 w-px' />
         {palette.map((hex) => (
           <button
             key={hex}
@@ -441,6 +529,46 @@ const PdfDrawOverlay: React.FC<{ bookKey: string; tool: PdfDrawToolType }> = ({
             onClick={() => setColor(hex ?? defaultColor)}
           />
         ))}
+        {tool === 'pdf-text' && (
+          <>
+            <div className='bg-base-content/10 mx-1 h-5 w-px' />
+            {PDF_FONT_SIZES.map((size) => (
+              <button
+                key={size}
+                title={_('Font Size') + ` ${size}`}
+                className={clsx(
+                  'h-6 min-w-6 rounded-full px-1 text-xs',
+                  penFontSize === size ? 'bg-base-300 font-semibold' : 'text-base-content/80',
+                )}
+                onClick={() => setPenFontSize(size)}
+              >
+                {size}
+              </button>
+            ))}
+            <button
+              title={_('No Background')}
+              className={clsx(
+                'h-5 w-5 rounded-full border',
+                penBackground ? 'border-base-content/25' : 'border-base-content',
+              )}
+              onClick={() => setPenBackground(undefined)}
+            >
+              <span className='bg-base-content/60 block h-px w-3 rotate-45' />
+            </button>
+            {PDF_BACKGROUND_COLORS.map((hex) => (
+              <button
+                key={hex}
+                title={_('Background Color') + ` ${hex}`}
+                className={clsx(
+                  'h-5 w-5 rounded-full border',
+                  penBackground === hex ? 'border-base-content' : 'border-base-content/25',
+                )}
+                style={{ backgroundColor: hex }}
+                onClick={() => setPenBackground(hex)}
+              />
+            ))}
+          </>
+        )}
         <button className='btn btn-sm btn-ghost' onClick={() => void undoLastDrawing()}>
           <FiCornerUpLeft />
           {_('Undo')}

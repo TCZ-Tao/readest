@@ -1,11 +1,19 @@
 import clsx from 'clsx';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { FiArrowUpRight } from 'react-icons/fi';
 
 import { DEFAULT_HIGHLIGHT_COLORS, PdfDrawing } from '@/types/book';
 import { useEnv } from '@/context/EnvContext';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
-import { applyPdfDrawings, seedPdfDrawings, usePdfDrawingsStore } from '@/store/pdfDrawingsStore';
+import {
+  applyPdfDrawings,
+  PDF_BACKGROUND_COLORS,
+  PDF_FONT_SIZES,
+  PDF_STROKE_WIDTHS,
+  seedPdfDrawings,
+  usePdfDrawingsStore,
+} from '@/store/pdfDrawingsStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { saveViewSettings } from '@/helpers/settings';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -116,6 +124,13 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   const isPdf = getBookData(bookKey)?.book?.format === 'PDF';
 
   const drawings = usePdfDrawingsStore((s) => s.drawingsByBook[bookKey]);
+  const penStrokeWidth = usePdfDrawingsStore((s) => s.penStrokeWidth);
+  const setPenStrokeWidth = usePdfDrawingsStore((s) => s.setPenStrokeWidth);
+  const penFontSize = usePdfDrawingsStore((s) => s.penFontSize);
+  const setPenFontSize = usePdfDrawingsStore((s) => s.setPenFontSize);
+  const penBackground = usePdfDrawingsStore((s) => s.penBackground);
+  const setPenBackground = usePdfDrawingsStore((s) => s.setPenBackground);
+  const setPenArrow = usePdfDrawingsStore((s) => s.setPenArrow);
   const drawingsRef = useRef<PdfDrawing[]>([]);
   drawingsRef.current = drawings ?? [];
 
@@ -371,17 +386,44 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     if (drag.mode === 'move') {
       pts = drag.startPts.map(([x, y]) => [x + dx, y + dy]);
     } else if (drag.mode === 'line-end') {
-      pts = drag.startPts.map(([x, y], i) =>
-        i === drag.handleIndex ? ([x + dx, y + dy] as [number, number]) : ([x, y] as [number, number]),
-      );
+      const fixed = drag.startPts[1 - drag.handleIndex]!;
+      const moved = drag.startPts[drag.handleIndex]!;
+      let x = moved[0] + dx;
+      let y = moved[1] + dy;
+      if (e.ctrlKey) {
+        // Snap to the nearest 45° direction (0/45/90/...), keeping the
+        // length the pointer is holding.
+        const ddx = x - fixed[0];
+        const ddy = y - fixed[1];
+        const length = Math.hypot(ddx, ddy);
+        if (length > 0) {
+          const angle = Math.round(Math.atan2(ddy, ddx) / (Math.PI / 4)) * (Math.PI / 4);
+          x = fixed[0] + Math.cos(angle) * length;
+          y = fixed[1] + Math.sin(angle) * length;
+        }
+      }
+      pts = drag.startPts.map((_, i) => (i === drag.handleIndex ? [x, y] : fixed));
     } else {
       // Dragging one rect corner; the opposite corner stays put. Store the
       // normalized pair (top-left, bottom-right) — drawShapes takes any
       // opposite pair, but keeping it normalized keeps handles stable.
       const { x0, y0, x1, y1 } = rectBounds(drag.startPts);
       const [cxFlag, cyFlag] = CORNERS[drag.handleIndex]!;
-      const cx = cxFlag ? x1 + dx : x0 + dx;
-      const cy = cyFlag ? y1 + dy : y0 + dy;
+      let cx = cxFlag ? x1 + dx : x0 + dx;
+      let cy = cyFlag ? y1 + dy : y0 + dy;
+      if (e.ctrlKey) {
+        // Lock to a square: equalize the signed extents from the static
+        // corner to the larger of the two.
+        const oppX = cxFlag ? x0 : x1;
+        const oppY = cyFlag ? y0 : y1;
+        let sw = cx - oppX;
+        let sh = cy - oppY;
+        const size = Math.max(Math.abs(sw), Math.abs(sh));
+        sw = (sw < 0 ? -1 : 1) * size;
+        sh = (sh < 0 ? -1 : 1) * size;
+        cx = oppX + sw;
+        cy = oppY + sh;
+      }
       pts = [
         [Math.min(cx, cxFlag ? x0 : x1), Math.min(cy, cyFlag ? y0 : y1)],
         [Math.max(cx, cxFlag ? x0 : x1), Math.max(cy, cyFlag ? y0 : y1)],
@@ -535,6 +577,68 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     [appService, bookKey, selectedId],
   );
 
+  // Pen-width / font-size / background: clicking sets the pen default, and
+  // when a shape of the matching kind is selected it is restyled in place.
+  const selectedDrawing = selectedId
+    ? drawingsRef.current.find((d) => d.id === selectedId)
+    : undefined;
+
+  const applyStrokeWidth = useCallback(
+    async (w: number) => {
+      setPenStrokeWidth(w);
+      if (!selectedId || !selectedDrawing || selectedDrawing.type === 'text') return;
+      await applyPdfDrawings(
+        bookKey,
+        drawingsRef.current.map((d) => (d.id === selectedId ? { ...d, strokeWidth: w } : d)),
+        appService,
+      );
+    },
+    [appService, bookKey, selectedDrawing, selectedId, setPenStrokeWidth],
+  );
+
+  const applyArrow = useCallback(
+    async (arrow: boolean) => {
+      setPenArrow(arrow);
+      if (!selectedId || !selectedDrawing || selectedDrawing.type !== 'line') return;
+      await applyPdfDrawings(
+        bookKey,
+        drawingsRef.current.map((d) =>
+          d.id === selectedId ? { ...d, ...(arrow ? { arrow: true } : { arrow: undefined }) } : d,
+        ),
+        appService,
+      );
+    },
+    [appService, bookKey, selectedDrawing, selectedId, setPenArrow],
+  );
+
+  const applyFontSize = useCallback(
+    async (size: number) => {
+      setPenFontSize(size);
+      if (!selectedId || !selectedDrawing || selectedDrawing.type !== 'text') return;
+      await applyPdfDrawings(
+        bookKey,
+        drawingsRef.current.map((d) => (d.id === selectedId ? { ...d, fontSize: size } : d)),
+        appService,
+      );
+    },
+    [appService, bookKey, selectedDrawing, selectedId, setPenFontSize],
+  );
+
+  const applyBackground = useCallback(
+    async (color?: string) => {
+      setPenBackground(color);
+      if (!selectedId || !selectedDrawing || selectedDrawing.type !== 'text') return;
+      await applyPdfDrawings(
+        bookKey,
+        drawingsRef.current.map((d) =>
+          d.id === selectedId ? { ...d, background: color } : d,
+        ),
+        appService,
+      );
+    },
+    [appService, bookKey, selectedDrawing, selectedId, setPenBackground],
+  );
+
   // Escape peels layers: close the text editor, then drop the selection,
   // then exit the editor. Delete removes the selected shape.
   useEffect(() => {
@@ -601,13 +705,24 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             const [ax, ay] = pageDraft.pts[0]!;
             const [bx, by] = pageDraft.pts[1] ?? pageDraft.pts[0]!;
             if (drawing.type === 'text') {
+              const fontSize = (drawing.fontSize ?? 12) * scale;
               return (
                 <svg className='absolute left-0 top-0 h-full w-full'>
+                  {drawing.background && (
+                    <rect
+                      x={ax - 2}
+                      y={ay - 1}
+                      width={(drawing.text?.length ?? 1) * fontSize * 0.6 + 4}
+                      height={fontSize * 1.3 + 2}
+                      rx={2}
+                      fill={drawing.background}
+                    />
+                  )}
                   <text
                     x={ax}
                     y={ay}
                     fill={drawing.color}
-                    fontSize={(drawing.fontSize ?? 12) * scale}
+                    fontSize={fontSize}
                     fontFamily='sans-serif'
                     dominantBaseline='text-before-edge'
                   >
@@ -619,15 +734,37 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             return (
               <svg className='absolute left-0 top-0 h-full w-full'>
                 {drawing.type === 'line' ? (
-                  <line
-                    x1={ax}
-                    y1={ay}
-                    x2={bx}
-                    y2={by}
-                    stroke={drawing.color}
-                    strokeWidth={2 * scale}
-                    strokeLinecap='round'
-                  />
+                  <>
+                    <line
+                      x1={ax}
+                      y1={ay}
+                      x2={bx}
+                      y2={by}
+                      stroke={drawing.color}
+                      strokeWidth={(drawing.strokeWidth ?? 2) * scale}
+                      strokeLinecap='round'
+                    />
+                    {drawing.arrow &&
+                      bx !== ax &&
+                      by !== ay &&
+                      [1, -1].map((sign) => {
+                        const wingAngle =
+                          Math.atan2(by - ay, bx - ax) + Math.PI + sign * 0.5;
+                        const wing = Math.max(8, (drawing.strokeWidth ?? 2) * scale * 3);
+                        return (
+                          <line
+                            key={sign}
+                            x1={bx}
+                            y1={by}
+                            x2={bx + Math.cos(wingAngle) * wing}
+                            y2={by + Math.sin(wingAngle) * wing}
+                            stroke={drawing.color}
+                            strokeWidth={(drawing.strokeWidth ?? 2) * scale}
+                            strokeLinecap='round'
+                          />
+                        );
+                      })}
+                  </>
                 ) : (
                   <rect
                     x={Math.min(ax, bx)}
@@ -719,12 +856,15 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         {input && (
           <input
             autoFocus
-            className='eink-bordered absolute rounded-sm border bg-base-100/80 px-1 outline-hidden'
+            className='eink-bordered absolute rounded-sm border px-1 outline-hidden'
             style={{
               left: input.x,
               top: input.y,
               width: Math.min(page.width * 0.6, 320),
               color: selectedDrawing?.color ?? defaultColor,
+              background:
+                selectedDrawing?.background ??
+                'color-mix(in srgb, var(--color-base-100) 80%, transparent)',
               fontSize: (selectedDrawing?.fontSize ?? 12) * scale,
               lineHeight: 1.2,
             }}
@@ -779,6 +919,42 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
         <span className='px-2 text-xs whitespace-nowrap text-base-content/80'>
           {_('Click a drawing to select, drag to move or resize')}
         </span>
+        {(selectedDrawing?.type === 'line' || selectedDrawing?.type === 'rect') && (
+          <>
+            {PDF_STROKE_WIDTHS.map((w) => (
+              <button
+                key={w}
+                title={_('Stroke Width') + ` ${w}`}
+                className={clsx(
+                  'flex h-6 w-6 items-center justify-center rounded-full',
+                  penStrokeWidth === w ? 'bg-base-300' : '',
+                )}
+                onClick={() => void applyStrokeWidth(w)}
+              >
+                <span
+                  className='bg-base-content rounded-full'
+                  style={{ width: 2 + w * 1.2, height: 2 + w * 1.2 }}
+                />
+              </button>
+            ))}
+            <div className='bg-base-content/10 mx-1 h-5 w-px' />
+          </>
+        )}
+        {selectedDrawing?.type === 'line' && (
+          <button
+            title={_('Arrow')}
+            className={clsx(
+              'flex h-6 w-6 items-center justify-center rounded-full',
+              selectedDrawing.arrow ? 'bg-base-300' : '',
+            )}
+            onClick={() => void applyArrow(!selectedDrawing.arrow)}
+          >
+            <FiArrowUpRight />
+          </button>
+        )}
+        {selectedDrawing?.type === 'line' && (
+          <div className='bg-base-content/10 mx-1 h-5 w-px' />
+        )}
         {palette.map((hex) => (
           <button
             key={hex}
@@ -791,6 +967,46 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             onClick={() => void applyColor(hex ?? defaultColor)}
           />
         ))}
+        {selectedDrawing?.type === 'text' && (
+          <>
+            <div className='bg-base-content/10 mx-1 h-5 w-px' />
+            {PDF_FONT_SIZES.map((size) => (
+              <button
+                key={size}
+                title={_('Font Size') + ` ${size}`}
+                className={clsx(
+                  'h-6 min-w-6 rounded-full px-1 text-xs',
+                  penFontSize === size ? 'bg-base-300 font-semibold' : 'text-base-content/80',
+                )}
+                onClick={() => void applyFontSize(size)}
+              >
+                {size}
+              </button>
+            ))}
+            <button
+              title={_('No Background')}
+              className={clsx(
+                'flex h-5 w-5 items-center justify-center rounded-full border',
+                penBackground ? 'border-base-content/25' : 'border-base-content',
+              )}
+              onClick={() => void applyBackground(undefined)}
+            >
+              <span className='bg-base-content/60 block h-px w-3 rotate-45' />
+            </button>
+            {PDF_BACKGROUND_COLORS.map((hex) => (
+              <button
+                key={hex}
+                title={_('Background Color') + ` ${hex}`}
+                className={clsx(
+                  'h-5 w-5 rounded-full border',
+                  penBackground === hex ? 'border-base-content' : 'border-base-content/25',
+                )}
+                style={{ backgroundColor: hex }}
+                onClick={() => void applyBackground(hex)}
+              />
+            ))}
+          </>
+        )}
         {selectedId && (
           <button className='btn btn-sm btn-ghost' onClick={() => void deleteSelected()}>
             {_('Delete')}

@@ -3,7 +3,6 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { FiEdit3 } from 'react-icons/fi';
 
 import { useEnv } from '@/context/EnvContext';
-import { useReaderStore } from '@/store/readerStore';
 import { saveViewSettings } from '@/helpers/settings';
 import { useTranslation } from '@/hooks/useTranslation';
 import { Overlay } from '@/components/Overlay';
@@ -28,59 +27,34 @@ interface Position {
 const PdfDrawingsContextMenu: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   const _ = useTranslation();
   const { envConfig } = useEnv();
-  const getView = useReaderStore((s) => s.getView);
   const [position, setPosition] = useState<Position | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    let renderer: EventTarget | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Pages forward their contextmenu through the parent window (coords
+    // already translated) -- see the hook in foliate-js pdf.js render().
+    const onForwarded = (e: Event) => {
+      const { x, y } = (e as CustomEvent).detail;
+      setPosition({ x, y });
+    };
+    window.addEventListener('readest-pdf-context-menu', onForwarded);
 
-    const handleContextMenu = (e: Event) => {
+    // Right-clicks on the reading canvas but outside any page (the margins
+    // around fit-page pages live in the parent document) take over here;
+    // everything else (sidebar, toolbars) keeps the browser menu.
+    const onDocument = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (!target?.closest?.('.foliate-viewer')) return;
       e.preventDefault();
-      e.stopPropagation();
-      const doc = e.currentTarget as Document;
-      const frame = doc.defaultView?.frameElement as HTMLElement | null;
-      if (!frame) return;
-      const rect = frame.getBoundingClientRect();
-      setPosition({
-        x: rect.left + (e as MouseEvent).clientX,
-        y: rect.top + (e as MouseEvent).clientY,
-      });
+      setPosition({ x: e.clientX, y: e.clientY });
     };
-
-    const attach = (doc: Document) => doc.addEventListener('contextmenu', handleContextMenu);
-    const onDoc = (event: Event) => {
-      const { doc } = (event as CustomEvent).detail;
-      if (doc) attach(doc);
-    };
-
-    // The renderer appears only after the view opens, which races this
-    // component's mount; poll briefly, then listen for later frames and catch
-    // up on the ones already on screen.
-    const tryAttach = () => {
-      if (cancelled) return;
-      const current = getView(bookKey)?.renderer;
-      if (!current) {
-        retryTimer = setTimeout(tryAttach, 200);
-        return;
-      }
-      renderer = current;
-      current.addEventListener('create-overlayer', onDoc);
-      for (const { doc } of current.getContents?.() ?? []) {
-        if (doc) attach(doc);
-      }
-    };
-    tryAttach();
+    document.addEventListener('contextmenu', onDocument);
 
     return () => {
-      cancelled = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      renderer?.removeEventListener('create-overlayer', onDoc);
+      window.removeEventListener('readest-pdf-context-menu', onForwarded);
+      document.removeEventListener('contextmenu', onDocument);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookKey]);
 
   useLayoutEffect(() => {

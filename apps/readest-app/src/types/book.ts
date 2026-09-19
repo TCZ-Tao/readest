@@ -292,8 +292,12 @@ export interface PdfDrawing {
   /** type=text only. Single line. */
   text?: string;
   color: string;
+  /** type=text only. Optional highlight rectangle behind the text. */
+  background?: string;
   /** User-space units; line/rect only. */
   strokeWidth?: number;
+  /** type=line only. Draw an arrowhead at the line's end point. */
+  arrow?: boolean;
   /** User-space units; text only. */
   fontSize?: number;
 }
