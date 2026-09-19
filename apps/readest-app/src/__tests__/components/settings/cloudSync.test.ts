@@ -30,13 +30,14 @@ describe('isCloudSyncInPlan', () => {
   });
 });
 
-describe('isCloudSyncAllowed (premium paywall)', () => {
-  test('third-party cloud sync requires a paid plan', () => {
-    expect(CLOUD_SYNC_REQUIRES_PREMIUM).toBe(true);
-    expect(isCloudSyncAllowed('free', false)).toBe(false);
+// This fork keeps the paywall off: cloud sync is free for every plan.
+describe('isCloudSyncAllowed (paywall disabled)', () => {
+  test('every plan may use cloud sync, signed in or not', () => {
+    expect(CLOUD_SYNC_REQUIRES_PREMIUM).toBe(false);
+    expect(isCloudSyncAllowed('free', false)).toBe(true);
     expect(isCloudSyncAllowed('plus', false)).toBe(true);
     expect(isCloudSyncAllowed('pro', false)).toBe(true);
-    expect(isCloudSyncAllowed('purchase', false)).toBe(false);
+    expect(isCloudSyncAllowed('purchase', false)).toBe(true);
   });
 });
 
@@ -279,17 +280,5 @@ describe('persistReadestCloudChoice', () => {
   });
 });
 
-// Premium is now the plan OR an outright Full Customization purchase.
-describe('isCloudSyncAllowed — customization unlock', () => {
-  test('entitles a free user who bought Full Customization', () => {
-    expect(isCloudSyncAllowed('free', true)).toBe(true);
-  });
-
-  test('entitles a grandfathered storage buyer, who carries the flag', () => {
-    expect(isCloudSyncAllowed('purchase', true)).toBe(true);
-  });
-
-  test('does not entitle a storage-only buyer after the grace period', () => {
-    expect(isCloudSyncAllowed('purchase', false)).toBe(false);
-  });
-});
+// The customization-unlock tests are moot while the paywall is off:
+// isCloudSyncAllowed returns true unconditionally.
