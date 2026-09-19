@@ -8,6 +8,10 @@ import { useReaderStore } from '@/store/readerStore';
 interface PdfDrawingsState {
   drawingsByBook: Record<string, PdfDrawing[]>;
   setDrawings: (bookKey: string, drawings: PdfDrawing[]) => void;
+  // Set by outside entry points (sidebar section, context menu) to ask the
+  // shape editor to select a specific drawing; consumed (cleared) by it.
+  pendingSelectId: string | null;
+  setPendingSelect: (id: string | null) => void;
 }
 
 // React-side mirror of the foliate book's drawing list (book.getDrawings()).
@@ -18,6 +22,8 @@ export const usePdfDrawingsStore = create<PdfDrawingsState>((set) => ({
   drawingsByBook: {},
   setDrawings: (bookKey, drawings) =>
     set((state) => ({ drawingsByBook: { ...state.drawingsByBook, [bookKey]: drawings } })),
+  pendingSelectId: null,
+  setPendingSelect: (id) => set({ pendingSelectId: id }),
 }));
 
 // Seed the store from the foliate book (the truth loaded at open time).

@@ -5,7 +5,8 @@ import { RiDeleteBinLine } from 'react-icons/ri';
 import { PdfDrawing } from '@/types/book';
 import { useEnv } from '@/context/EnvContext';
 import { useReaderStore } from '@/store/readerStore';
-import { applyPdfDrawings, seedPdfDrawings, usePdfDrawingsStore } from '@/store/pdfDrawingsStore';
+import { applyPdfDrawings, usePdfDrawingsStore } from '@/store/pdfDrawingsStore';
+import { saveViewSettings } from '@/helpers/settings';
 import { useTranslation } from '@/hooks/useTranslation';
 import { eventDispatcher } from '@/utils/event';
 
@@ -20,14 +21,28 @@ const TYPE_LABEL: Record<PdfDrawing['type'], string | null> = {
 // annotations tab only, and only when the book has drawings.
 const PdfDrawingsSection: React.FC<{ bookKey: string }> = ({ bookKey }) => {
   const _ = useTranslation();
-  const { appService } = useEnv();
+  const { appService, envConfig } = useEnv();
   const getView = useReaderStore((s) => s.getView);
   const drawings = usePdfDrawingsStore((s) => s.drawingsByBook[bookKey]);
 
   // The foliate book holds the truth loaded at open time; mirror it once so
-  // the section renders without waiting for the first store write.
+  // the section renders without waiting for the first store write. The view
+  // may still be opening when this mounts, so retry until it answers.
   useEffect(() => {
-    seedPdfDrawings(bookKey);
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const trySeed = () => {
+      const book = useReaderStore.getState().getView(bookKey)?.book;
+      if (book?.getDrawings) {
+        usePdfDrawingsStore.getState().setDrawings(bookKey, book.getDrawings());
+      } else if (attempts++ < 50) {
+        timer = setTimeout(trySeed, 200);
+      }
+    };
+    trySeed();
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookKey]);
 
@@ -39,6 +54,14 @@ const PdfDrawingsSection: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     const href = JSON.stringify(pageIndex);
     eventDispatcher.dispatch('navigate', { bookKey, href });
     getView(bookKey)?.goTo(href);
+  };
+
+  // Clicking an entry jumps to its page and enters the shape editor with the
+  // drawing pre-selected — the "edit this one" flow.
+  const editDrawing = (drawing: PdfDrawing) => {
+    usePdfDrawingsStore.getState().setPendingSelect(drawing.id);
+    void saveViewSettings(envConfig, bookKey, 'annotationQuickAction', 'pdf-select', false, true);
+    jumpTo(drawing.pageIndex);
   };
 
   const remove = (id: string) => {
@@ -66,8 +89,9 @@ const PdfDrawingsSection: React.FC<{ bookKey: string }> = ({ bookKey }) => {
               />
               <button
                 type='button'
+                data-pdf-drawing-entry={drawing.id}
                 className='flex min-w-0 flex-1 items-center gap-1.5 text-start text-sm'
-                onClick={() => jumpTo(drawing.pageIndex)}
+                onClick={() => editDrawing(drawing)}
               >
                 <Icon className='shrink-0 text-base-content/70' size={13} />
                 <span className='min-w-0 truncate'>

@@ -153,6 +153,15 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookKey]);
 
+  // Sidebar section (and any future entry point) asks the editor to select a
+  // specific drawing through the store; consume it whenever it appears.
+  const pendingSelectId = usePdfDrawingsStore((s) => s.pendingSelectId);
+  useEffect(() => {
+    if (!pendingSelectId) return;
+    setSelectedId(pendingSelectId);
+    usePdfDrawingsStore.getState().setPendingSelect(null);
+  }, [pendingSelectId]);
+
   // Same per-frame page scan as the other PDF overlays, so handles follow
   // page turns, zooms and resizes.
   useEffect(() => {
@@ -389,17 +398,29 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     dragRef.current = null;
     const current = draftRef.current;
     setDraft(null);
-    if (drag && current) void commitPts(current.id, current.pageIndex, current.pts);
-  }, [commitPts, onDragMove]);
+    if (!drag) return;
+    if (current) {
+      // Commit first (setDrawings repaints with the drawing still hidden, so
+      // the old position never flashes), then unhide to reveal the new spot.
+      void commitPts(current.id, current.pageIndex, current.pts).then(() => {
+        getView(bookKey)?.book?.hideDrawing?.(null);
+      });
+    } else {
+      // A click without movement: nothing committed, restore the shape.
+      getView(bookKey)?.book?.hideDrawing?.(null);
+    }
+  }, [bookKey, commitPts, getView, onDragMove]);
 
-  // Drop the window drag listeners if the editor unmounts mid-drag.
+  // Drop the window drag listeners if the editor unmounts mid-drag, and make
+  // sure a hidden shape never stays blanked after the editor is gone.
   useEffect(
     () => () => {
       window.removeEventListener('pointermove', onDragMove);
       window.removeEventListener('pointerup', onDragEnd);
       window.removeEventListener('pointercancel', onDragEnd);
+      useReaderStore.getState().getView(bookKey)?.book?.hideDrawing?.(null);
     },
-    [onDragMove, onDragEnd],
+    [bookKey, onDragMove, onDragEnd],
   );
 
   const startDrag = (
@@ -410,6 +431,9 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
     handleIndex: number,
     startPts: [number, number][],
   ) => {
+    // Blank the committed shape so the drag preview is the only copy on
+    // screen (line/rect used to show as a double image; text didn't move).
+    getView(bookKey)?.book?.hideDrawing?.(id);
     dragRef.current = {
       id,
       pageIndex,
@@ -576,6 +600,22 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
             if (!drawing) return null;
             const [ax, ay] = pageDraft.pts[0]!;
             const [bx, by] = pageDraft.pts[1] ?? pageDraft.pts[0]!;
+            if (drawing.type === 'text') {
+              return (
+                <svg className='absolute left-0 top-0 h-full w-full'>
+                  <text
+                    x={ax}
+                    y={ay}
+                    fill={drawing.color}
+                    fontSize={(drawing.fontSize ?? 12) * scale}
+                    fontFamily='sans-serif'
+                    dominantBaseline='text-before-edge'
+                  >
+                    {drawing.text}
+                  </text>
+                </svg>
+              );
+            }
             return (
               <svg className='absolute left-0 top-0 h-full w-full'>
                 {drawing.type === 'line' ? (
@@ -632,6 +672,33 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
                 opacity={0.6}
               />
             )}
+            {selectedDrawing.type === 'text' &&
+              (() => {
+                // Same visual language as line/rect: dashed outline plus a
+                // handle dot, so the selection is obvious on a text shape too.
+                const b = textBox(selectedDrawing, selectedOnPage.pts, scale);
+                return (
+                  <>
+                    <rect
+                      x={b.x0}
+                      y={b.y0}
+                      width={b.x1 - b.x0}
+                      height={b.y1 - b.y0}
+                      fill='none'
+                      stroke={SELECTION_COLOR}
+                      strokeWidth={1}
+                      strokeDasharray='4 3'
+                      opacity={0.6}
+                    />
+                    <circle
+                      cx={selectedOnPage.pts[0]![0]}
+                      cy={selectedOnPage.pts[0]![1]}
+                      r={HANDLE_HIT_PX / 2}
+                      fill={SELECTION_COLOR}
+                    />
+                  </>
+                );
+              })()}
           </svg>
         )}
         {handles &&

@@ -106,6 +106,7 @@ import ImageViewer from './ImageViewer';
 import TableViewer from './TableViewer';
 import PdfCropOverlay from './PdfCropOverlay';
 import PdfDrawOverlay from './PdfDrawOverlay';
+import PdfDrawingsContextMenu from './PdfDrawingsContextMenu';
 import PdfShapeEditor from './PdfShapeEditor';
 import { getTTSMiniPlayerClearance } from '../utils/ttsMiniPlayerPosition';
 
@@ -1173,6 +1174,7 @@ const FoliateViewer: React.FC<{
         viewSettings.annotationQuickAction === 'pdf-select' && (
           <PdfShapeEditor bookKey={bookKey} />
         )}
+      {bookData?.book?.format === 'PDF' && <PdfDrawingsContextMenu bookKey={bookKey} />}
       <div
         ref={containerRef}
         role='main'

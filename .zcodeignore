@@ -1,0 +1,101 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+docker/.env
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+/certs
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Rust build
+target
+
+fastlane/report.xml
+fastlane/metadata/android/en-US/changelogs
+
+*.koplugin.zip
+
+# nix
+result*
+
+.playwright-mcp/
+.gstack
+
+.claude/worktrees
+.claude/settings.local.json
+
+fastlane/staging/
+fastlane/metadata-play/android/en-US/changelogs
+
+apps/readest.koplugin/bin/
+apps/readest.koplugin/native/localsend-bin/target/
+
+# scripts/tauri.mjs parks the wry Cargo.lock here during a Linux CEF build
+/Cargo.lock.wry
+
+.cursor/
+.codegraph/
+
+/plans/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

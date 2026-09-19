@@ -139,6 +139,9 @@ export interface BookDoc {
   // convert app-side screen captures to PDF user space (crop/rotate aware).
   setDrawings?(drawings: PdfDrawing[]): void;
   getDrawings?(): PdfDrawing[];
+  // Temporarily blank one drawing (by id) on screen while the shape editor
+  // drags it; pass null to restore.
+  hideDrawing?(id: string | null): void;
   getPdfPageSize?(index: number): Promise<{ width: number; height: number }>;
   convertToPdfPoint?(index: number, x: number, y: number, scale: number): Promise<[number, number]>;
   convertToViewportPoint?(
