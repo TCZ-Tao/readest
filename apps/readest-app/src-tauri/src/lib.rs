@@ -607,7 +607,22 @@ pub fn run() {
     let builder = builder.plugin(window_state::init());
 
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .map_label(|label| {
+                // Every book opens in a window whose label is unique per open
+                // (`reader-<n>-<ts>-<rand>`, see createReaderWindow in nav.ts),
+                // so per-label state could never be reused. Grouping them under
+                // one key makes each new reader window open where the last one
+                // was closed.
+                if label.starts_with("reader") {
+                    "reader"
+                } else {
+                    label
+                }
+            })
+            .build(),
+    );
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(macos::traffic_light::init());
