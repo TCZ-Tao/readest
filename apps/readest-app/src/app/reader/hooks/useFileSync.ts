@@ -811,27 +811,29 @@ export const useFileSync = (bookKey: string) => {
       if (event.detail?.bookKey && event.detail.bookKey !== bookKey) return;
       syncRefs.current.pushTocOverrideNow();
     };
-    const handlePdfDrawingsChanged = (event: CustomEvent) => {
-      if (event.detail?.bookKey && event.detail.bookKey !== bookKey) return;
-      syncRefs.current.pushPdfDrawingsNow();
-    };
     eventDispatcher.on('push-file-sync', handlePush);
     eventDispatcher.on('pull-file-sync', handlePull);
     eventDispatcher.on('flush-file-sync', handlePush);
     eventDispatcher.on('toc-override-changed', handleTocOverrideChanged);
-    eventDispatcher.on('pdf-drawings-changed', handlePdfDrawingsChanged);
     return () => {
       eventDispatcher.off('push-file-sync', handlePush);
       eventDispatcher.off('pull-file-sync', handlePull);
       eventDispatcher.off('flush-file-sync', handlePush);
       eventDispatcher.off('toc-override-changed', handleTocOverrideChanged);
-      eventDispatcher.off('pdf-drawings-changed', handlePdfDrawingsChanged);
     };
   }, [bookKey, debouncedPush]);
 
+  // PDF drawings deliberately do NOT push on edit — every stroke or drag
+  // would fire an upload, and this is a backup copy, not collaboration.
+  // They ride the open/close cycle instead: the first-progress pass above
+  // converges on open (pulling a newer remote, back-filling stale mirrors),
+  // and the unmount flush below (book closed) publishes the local state.
+  // Closing the whole app without the unmount running is covered by that
+  // same open-time convergence on the next launch.
+
   // Window blur ⇒ push pending changes. Window focus ⇒ pull (cooldown-gated):
-  // both configs and the edited-TOC override and the PDF drawings, so edits
-  // made on another device land here as soon as the reader regains focus.
+  // both configs and the edited-TOC override, so edits made on another device
+  // land here as soon as the reader regains focus.
   useWindowActiveChanged((isActive) => {
     if (!isReady) return;
     if (isActive) {
@@ -839,16 +841,18 @@ export const useFileSync = (bookKey: string) => {
         syncRefs.current.pullNow();
       }
       syncRefs.current.syncTocOverrideNow({ pushLocalIfNewest: true });
-      syncRefs.current.syncPdfDrawingsNow({ pushLocalIfNewest: true });
     } else if (dirtyRef.current) {
       debouncedPush.flush();
     }
   });
 
   // Flush any pending debounced push when the hook unmounts (book closed).
+  // The PDF drawings' final local state goes out here too — their only
+  // upload moment besides the open-time convergence.
   useEffect(() => {
     return () => {
       debouncedPush.flush();
+      syncRefs.current.pushPdfDrawingsNow();
     };
   }, [debouncedPush]);
 
