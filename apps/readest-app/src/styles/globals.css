@@ -709,6 +709,12 @@
     touch-action: manipulation;
   }
 
+  /* touch-none must win over the manipulation above, or the browser claims
+     touch drags for scrolling and kills pointer strokes with pointercancel. */
+  .no-context-menu.touch-none {
+    touch-action: none;
+  }
+
   .no-context-menu img,
   .no-context-menu a {
     -webkit-touch-callout: none;

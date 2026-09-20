@@ -913,10 +913,10 @@ const PdfShapeEditor: React.FC<{ bookKey: string }> = ({ bookKey }) => {
       {pages.map(renderPageLayer)}
       <div
         data-shape-toolbar=''
-        className='eink-bordered fixed bottom-8 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-base-100 px-3 py-2 shadow-lg'
+        className='eink-bordered fixed bottom-8 left-1/2 z-10 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-full bg-base-100 px-3 py-2 shadow-lg'
         onPointerDown={(e) => e.stopPropagation()}
       >
-        <span className='px-2 text-xs whitespace-nowrap text-base-content/80'>
+        <span className='hidden px-2 text-xs whitespace-nowrap text-base-content/80 sm:inline'>
           {_('Click a drawing to select, drag to move or resize')}
         </span>
         {(selectedDrawing?.type === 'line' || selectedDrawing?.type === 'rect') && (
