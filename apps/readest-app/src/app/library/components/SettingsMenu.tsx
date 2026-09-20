@@ -41,7 +41,7 @@ import Menu from '@/components/Menu';
 import { type AppLockDialogMode, useAppLockStore } from '@/store/appLockStore';
 
 interface SettingsMenuProps {
-  onPullLibrary: (fullRefresh?: boolean, verbose?: boolean) => void;
+  onPullLibrary: (fullRefresh?: boolean, verbose?: boolean, fileFullSync?: boolean) => void;
   setIsDropdownOpen?: (isOpen: boolean) => void;
 }
 

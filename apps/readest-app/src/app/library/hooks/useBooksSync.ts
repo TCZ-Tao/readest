@@ -86,13 +86,15 @@ export const useBooksSync = () => {
   }, [user, lastSyncedAtBooks]);
 
   const pullLibrary = useCallback(
-    async (fullRefresh = false, verbose = false) => {
+    async (fullRefresh = false, verbose = false, fileFullSync = false) => {
       // Providers are independently selectable (#5062): an enabled file
       // backend and Readest Cloud both run their own pass here, every
       // library-refresh surface — pull to refresh, the SettingsMenu sync
       // row, BackupWindow — routes through here. The file pass works
       // logged out (file sync has no Readest account dependency); the
-      // native pull below still requires `user`.
+      // native pull below still requires `user`. `fileFullSync` upgrades
+      // the file pass to the per-book audit (Full Sync) a manual refresh
+      // asks for; the auto-sync hooks keep the incremental default.
       const settingsNow = useSettingsStore.getState().settings;
       const backends = getActiveFileSyncBackends(settingsNow);
       const readest = isReadestCloudEnabled(settingsNow);
@@ -114,7 +116,7 @@ export const useBooksSync = () => {
         let fileSynced = 0;
         let fileSucceeded = false;
         if (runFilePass) {
-          const result = await runFileLibrarySyncPass(envConfig, _);
+          const result = await runFileLibrarySyncPass(envConfig, _, fileFullSync);
           // A run that could not write library.json converged NOTHING, however
           // many books it uploaded: peers read membership, tombstones and the
           // uploaded-file record from that one file. Reporting it as "N books

@@ -28,7 +28,10 @@ import { getImportErrorMessage } from '@/services/errors';
 import { ingestFile } from '@/services/ingestService';
 import { eventDispatcher } from '@/utils/event';
 import { transferManager } from '@/services/transferManager';
-import { isReadestCloudStorageActive } from '@/services/sync/cloudSyncProvider';
+import {
+  getActiveFileSyncBackends,
+  isReadestCloudStorageActive,
+} from '@/services/sync/cloudSyncProvider';
 import { initDebugReporting } from '@/services/debugReport';
 import { getFilename, getFolderImportGroupName, joinScannedPath } from '@/utils/path';
 import { parseOpenWithFiles } from '@/helpers/openWith';
@@ -394,22 +397,26 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
   useInboxDrainer();
   const { isDragging } = useDragDropImport();
 
+  // Pull to refresh runs the FULL library pass on every configured file
+  // backend (WebDAV / S3 / …), logged in or not — the gesture is a deliberate
+  // library-level audit, unlike the reader's per-book sync. Login is only
+  // demanded when Readest Cloud would be the only possible sync channel.
   usePullToRefresh(
     scrollRef,
     async () => {
-      if (!user) {
+      if (!user && getActiveFileSyncBackends(useSettingsStore.getState().settings).length === 0) {
         navigateToLogin(router);
         return;
       }
-      await pullLibrary(false, true);
+      await pullLibrary(false, true, true);
       checkOPDSSubscriptions(true);
     },
     async () => {
-      if (!user) {
+      if (!user && getActiveFileSyncBackends(useSettingsStore.getState().settings).length === 0) {
         navigateToLogin(router);
         return;
       }
-      await pullLibrary(true, true);
+      await pullLibrary(true, true, true);
       checkOPDSSubscriptions(true);
     },
   );
