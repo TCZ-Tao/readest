@@ -67,6 +67,25 @@ pnpm --filter @readest/readest-app setup-vendors   # 拷贝 pdf.js / simplecc / 
 
 更多测试形态（browser/tauri/android/e2e）见 `apps/readest-app/package.json` 的 scripts。
 
+## 并行开发与 worktree
+
+一个工作树同一时刻只能检出一个分支。要同时开发多个功能（例如多个 AI 对话并行工作），**不要在同一个目录里切分支**——未提交改动会跟着分支走或导致切换失败，两个任务互相踩踏。正确做法是每个任务一个 worktree：
+
+1. 主目录执行 `pnpm worktree:new <branch>`：在同级目录生成 `readest-<branch>`（分支名中的 `/` 换成 `-`），自动基于 `tcz`（本 fork 的集成分支，不是上游 `origin/main`；基线可用第二参数覆盖：`pnpm worktree:new <branch> <base>`）建新分支，并备齐 submodule、`pnpm install`、`.env*`、`public/vendor`、Android gen，`target` 以 junction 共享主仓。
+2. 在新目录上打开一个新的 AI 对话/工作区，两边各自有独立分支和未提交状态，互不干扰。
+3. 结束后 `pnpm worktree:rm <branch>` 清理。
+
+注意事项：
+
+- 同一分支不能同时检出在两个 worktree（git 会报 already checked out）。
+- `worktree:new` 检出已有分支后会把该分支 rebase 到基线（新建分支时是无操作）；不想被改写历史的分支不要用 `worktree:new` 检出。
+- 全局同一时间只跑一个 dev 实例：`target/` 跨 worktree 共享，并发 `pnpm tauri dev` 会互相等 cargo 锁（表现为长时间无输出的串行等待，不是报错），dev server 端口也会冲突。并行的另一个对话只做改代码、`pnpm test` / `pnpm lint` 等不冲突的工作。
+- 新 worktree 实际磁盘增量只有几百 MB：node_modules 是 pnpm 全局 store 硬链接，Rust `target`（数十 GB 编译缓存）是 junction 共享——裸 `git worktree add` 会失去这两样，从零装依赖、重编 Rust，所以禁止。
+- 主目录当前分支有大量未提交改动时，先提交再开并行任务。
+- 按工作区路径隔离的 AI 会话记忆（如 ZCode 项目记忆）不跨 worktree 共享；仓库内 `apps/readest-app/.claude/memory/` 随检出各有一份。
+
+worktree 的更多坑（共享 target 的构建脚本缓存、submodule 漂移、rm 后 submodule 掉注册）见 `apps/readest-app/.claude/memory/` 的 `worktree-*.md` 条目。
+
 ## 代码风格与提交检查
 
 - JS/TS：Biome（配置在根 `biome.json`）。husky + lint-staged 会在提交时自动格式化。

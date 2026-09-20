@@ -10,9 +10,14 @@ const SKIPPED_SUBMODULES = [
 
 const arg = process.argv[2];
 if (!arg) {
-  console.error('Usage: pnpm worktree:new <branch-name|pr-number>');
+  console.error('Usage: pnpm worktree:new <branch-name|pr-number> [base-branch]');
   process.exit(1);
 }
+
+// Base for the branch-name path: the fork's integration branch by default,
+// overridable as the second argument. The PR path still uses origin/main.
+const isPrNumber = /^\d+$/.test(arg);
+const base = isPrNumber ? 'origin/main' : process.argv[3] || 'tcz';
 
 const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
 
@@ -26,7 +31,7 @@ execSync('git fetch origin', { stdio: gitStdio, cwd: repoRoot });
 let localBranch: string;
 let worktreePath: string;
 
-if (/^\d+$/.test(arg)) {
+if (isPrNumber) {
   // PR number -- fetch and set up remote tracking so `git push` works (even for forks)
   localBranch = `pr-${arg}`;
   worktreePath = path.join(path.dirname(repoRoot), `readest-${localBranch}`);
@@ -123,16 +128,16 @@ if (/^\d+$/.test(arg)) {
       cwd: repoRoot,
     });
   } else {
-    execSync(`git worktree add -b "${localBranch}" "${worktreePath}" origin/main`, {
+    execSync(`git worktree add -b "${localBranch}" "${worktreePath}" "${base}"`, {
       stdio: gitStdio,
       cwd: repoRoot,
     });
   }
 }
 
-// Rebase onto origin/main so the worktree starts from the latest upstream
-console.error('\n--- Rebasing onto origin/main ---');
-execSync('git rebase origin/main', { stdio: gitStdio, cwd: worktreePath });
+// Rebase onto the base so the worktree starts from the latest base
+console.error(`\n--- Rebasing onto ${base} ---`);
+execSync(`git rebase "${base}"`, { stdio: gitStdio, cwd: worktreePath });
 
 // Repoint submodule URLs to local .git/modules/ clones to avoid remote fetches.
 // Submodules without a local cache fall back to the remote URL.

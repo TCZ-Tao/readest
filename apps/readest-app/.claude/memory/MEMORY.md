@@ -181,6 +181,7 @@ Index only — one line per memory. Detail lives in the topic files; do not rest
 - [Slice-in-loop NOT O(n^2)](review-perf-slice-not-quadratic.md) V8 SlicedString
 - [Commit messages English-only](feedback-commit-message-english-only.md) no CJK, no em/en dashes
 - PR flow: [rebase onto origin/main](feedback_pr_rebase.md) · [fresh branch per PR](feedback_pr_new_branch.md) · [always `pnpm worktree:new`](feedback_use_worktree.md)
+- [Parallel dev = one worktree + a new conversation](worktree-parallel-dev-workflow.md) NEVER switch branches in the primary checkout; worktree base = `tcz` (script default, NOT origin/main); ONE dev instance at a time (shared target junction); user-facing rules in root AGENTS.md
 - [`pnpm lint` EXCLUDES the format check](verify-lint-excludes-format-check.md) run `pnpm format:check` too or CI `build_web_app` fails on formatting
 - [Don't push till confirmed](feedback_dont_push_every_change.md) pre-push hook runs full vitest (~2.5 min)
 - [Test file filter](feedback_test_file_filter.md) `pnpm test <path>` no `--` · [No test seams in prod](feedback_no_test_seams_in_prod.md) · [no lookbehind regex](feedback_no_lookbehind_regex.md)
