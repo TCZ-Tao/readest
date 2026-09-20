@@ -649,8 +649,12 @@ export abstract class BaseAppService implements AppService {
     return BookSvc.loadTocOverride(this.fs, book);
   }
 
-  async saveTocOverride(book: Book, toc: TOCItem[]) {
-    return BookSvc.saveTocOverride(this.fs, book, toc);
+  async loadTocOverridePayload(book: Book) {
+    return BookSvc.loadTocOverridePayload(this.fs, book);
+  }
+
+  async saveTocOverride(book: Book, toc: TOCItem[], updatedAt?: number) {
+    return BookSvc.saveTocOverride(this.fs, book, toc, updatedAt);
   }
 
   async loadPdfDrawings(book: Book) {

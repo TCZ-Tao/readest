@@ -12,6 +12,8 @@ import { eventDispatcher } from '@/utils/event';
 import type { BookNote } from '@/types/book';
 import { FileSyncEngine } from '@/services/sync/file/engine';
 import { FileSyncError } from '@/services/sync/file/provider';
+import { pickNewerTocOverride, type RemoteTocOverride } from '@/services/sync/file/tocOverride';
+import { normalizeTocTree } from '@/app/reader/components/sidebar/tocEditTree';
 import { createAppLocalStore } from '@/services/sync/file/appLocalStore';
 import {
   createFileSyncProvider,
@@ -543,12 +545,100 @@ export const useFileSync = (bookKey: string) => {
     _,
   ]);
 
+  /**
+   * Sync the edited-TOC override file (`toc-override.json`) across every
+   * backend. Whole-blob LWW on `updatedAt`: pull all mirrors, adopt the
+   * newest tree (persisting it and hot-swapping the live bookDoc.toc when a
+   * remote wins), and — when asked — publish the local tree to backends whose
+   * remote copy is missing or older, so every mirror converges on the winner.
+   */
+  const syncTocOverrideNow = useCallback(
+    async (options: { pushLocalIfNewest?: boolean }) => {
+      if (!isReady) return;
+      const book = getBookData(bookKey)?.book;
+      if (!book || book.format !== 'PDF') return;
+      // A null local is a fresh device: the pull below adopts the newest
+      // remote tree, it must not short-circuit here.
+      const local: RemoteTocOverride | null =
+        (await appService?.loadTocOverridePayload(book)) ?? null;
+      let working: RemoteTocOverride | null = local;
+      const stale: Array<{ kind: FileSyncBackendKind; engine: FileSyncEngine }> = [];
+      for (const { kind, engine } of engines) {
+        if (!allowsPull(kind)) continue;
+        try {
+          const remote = await engine.pullTocOverride(book);
+          const next = pickNewerTocOverride(working, remote);
+          if (next && next !== working) {
+            working = next;
+          } else if (
+            options.pushLocalIfNewest &&
+            working &&
+            (!remote || remote.updatedAt < working.updatedAt)
+          ) {
+            stale.push({ kind, engine });
+          }
+        } catch (e) {
+          handleSyncError(kind, 'file sync toc pull failed', e);
+        }
+      }
+      if (working && working !== local) {
+        // A newer remote tree landed: persist it, keeping its own timestamp so
+        // this save never reads as a fresh local edit, and swap the live
+        // bookDoc.toc so the open reader adopts it immediately.
+        await appService?.saveTocOverride(book, working.toc, working.updatedAt);
+        useBookDataStore.getState().setBookDocToc(bookKey, normalizeTocTree(working.toc));
+      }
+      const winner = working;
+      if (winner) {
+        for (const { kind, engine } of stale) {
+          try {
+            await engine.pushTocOverride(book, winner);
+          } catch (e) {
+            handleSyncError(kind, 'file sync toc push failed', e);
+          }
+        }
+      }
+    },
+    [isReady, bookKey, engines, getBookData, allowsPull, appService, handleSyncError],
+  );
+
+  /** Push the freshly-saved local override to every backend that allows it. */
+  const pushTocOverrideNow = useCallback(async () => {
+    if (!isReady) return;
+    const book = getBookData(bookKey)?.book;
+    if (!book || book.format !== 'PDF') return;
+    const local = await appService?.loadTocOverridePayload(book);
+    if (!local) return;
+    for (const { kind, engine } of engines) {
+      if (!allowsPush(kind)) continue;
+      try {
+        await engine.pushTocOverride(book, local);
+      } catch (e) {
+        handleSyncError(kind, 'file sync toc push failed', e);
+      }
+    }
+  }, [isReady, bookKey, engines, getBookData, allowsPush, appService, handleSyncError]);
+
   // Stash the latest callbacks in a ref so the event-bridge effect doesn't
   // re-bind on every render (pattern from useKOSync).
-  const syncRefs = useRef({ pushNow, pullNow, pushBookFileNow, pushBookCoverNow });
+  const syncRefs = useRef({
+    pushNow,
+    pullNow,
+    pushBookFileNow,
+    pushBookCoverNow,
+    pushTocOverrideNow,
+    syncTocOverrideNow,
+  });
   useEffect(() => {
-    syncRefs.current = { pushNow, pullNow, pushBookFileNow, pushBookCoverNow };
-  }, [pushNow, pullNow, pushBookFileNow, pushBookCoverNow]);
+    syncRefs.current = {
+      pushNow,
+      pullNow,
+      pushBookFileNow,
+      pushBookCoverNow,
+      pushTocOverrideNow,
+      syncTocOverrideNow,
+    };
+  }, [pushNow, pullNow, pushBookFileNow, pushBookCoverNow, pushTocOverrideNow, syncTocOverrideNow]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedPush = useCallback(
@@ -579,6 +669,7 @@ export const useFileSync = (bookKey: string) => {
         dirtyRef.current = true;
         await syncRefs.current.pushNow();
       }
+      await syncRefs.current.syncTocOverrideNow({ pushLocalIfNewest: true });
       await Promise.all([syncRefs.current.pushBookCoverNow(), syncRefs.current.pushBookFileNow()]);
     })();
   }, [isReady, progress?.location]);
@@ -626,22 +717,32 @@ export const useFileSync = (bookKey: string) => {
       hasPulledOnce.current = false;
       syncRefs.current.pullNow();
     };
+    const handleTocOverrideChanged = (event: CustomEvent) => {
+      if (event.detail?.bookKey && event.detail.bookKey !== bookKey) return;
+      syncRefs.current.pushTocOverrideNow();
+    };
     eventDispatcher.on('push-file-sync', handlePush);
     eventDispatcher.on('pull-file-sync', handlePull);
     eventDispatcher.on('flush-file-sync', handlePush);
+    eventDispatcher.on('toc-override-changed', handleTocOverrideChanged);
     return () => {
       eventDispatcher.off('push-file-sync', handlePush);
       eventDispatcher.off('pull-file-sync', handlePull);
       eventDispatcher.off('flush-file-sync', handlePush);
+      eventDispatcher.off('toc-override-changed', handleTocOverrideChanged);
     };
   }, [bookKey, debouncedPush]);
 
-  // Window blur ⇒ push pending changes. Window focus ⇒ pull (cooldown-gated).
+  // Window blur ⇒ push pending changes. Window focus ⇒ pull (cooldown-gated):
+  // both configs and the edited-TOC override, so edits made on another device
+  // land here as soon as the reader regains focus.
   useWindowActiveChanged((isActive) => {
     if (!isReady) return;
     if (isActive) {
-      if (Date.now() - lastPulledAtRef.current < PULL_COOLDOWN_MS) return;
-      syncRefs.current.pullNow();
+      if (Date.now() - lastPulledAtRef.current >= PULL_COOLDOWN_MS) {
+        syncRefs.current.pullNow();
+      }
+      syncRefs.current.syncTocOverrideNow({ pushLocalIfNewest: true });
     } else if (dirtyRef.current) {
       debouncedPush.flush();
     }

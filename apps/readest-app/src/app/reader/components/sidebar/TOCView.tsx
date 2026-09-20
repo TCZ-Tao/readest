@@ -130,24 +130,16 @@ const TOCView: React.FC<{
 
   // Persist an edited tree: refresh bookDoc.toc (drives this panel and the
   // annotation/bookmark section labels) and write the override file that
-  // readerStore reapplies on the next open.
+  // readerStore reapplies on the next open, then flag the file-sync hook to
+  // ship the new tree to every enabled backend.
   const commitToc = useCallback(
     (newToc: TOCItem[]) => {
       setEditToc(newToc);
-      const id = bookKey.split('-')[0]!;
-      useBookDataStore.setState((state) => {
-        const existing = state.booksData[id];
-        if (!existing?.bookDoc) return state;
-        return {
-          booksData: {
-            ...state.booksData,
-            [id]: { ...existing, bookDoc: { ...existing.bookDoc, toc: newToc } },
-          },
-        };
-      });
+      useBookDataStore.getState().setBookDocToc(bookKey, newToc);
       if (book) {
         appService
           ?.saveTocOverride(book, newToc)
+          .then(() => eventDispatcher.dispatch('toc-override-changed', { bookKey }))
           .catch((e) => console.warn('Failed to save TOC override:', e));
       }
     },

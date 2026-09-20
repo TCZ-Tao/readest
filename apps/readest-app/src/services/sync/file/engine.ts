@@ -10,6 +10,7 @@ import {
   buildBookCoverPath,
   buildBookDirPath,
   buildBookFilePath,
+  buildBookTocOverridePath,
   buildLibraryPath,
   SYNC_BOOKS_DIR,
   SYNC_BOOK_CONFIG_FILE,
@@ -22,6 +23,7 @@ import {
   stripDeviceLocalFields,
   RemoteLibraryIndex,
 } from './wire';
+import { parseTocOverridePayload, RemoteTocOverride } from './tocOverride';
 import {
   isRemoteBookClockNewer,
   isRemoteBookMissingLocally,
@@ -323,6 +325,35 @@ export class FileSyncEngine {
     const dirs = [...ancestorsOf(`${dirPath}/.placeholder`), dirPath];
     await this.ensureDirs(dirs);
     const body = JSON.stringify(buildRemotePayload(book, config, deviceId));
+    try {
+      await this.provider.writeText(path, body);
+    } catch (e) {
+      if (e instanceof FileSyncError && e.status === 409) {
+        await this.ensureDirs(dirs);
+        await this.provider.writeText(path, body);
+        return;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Pull `<rootPath>/Readest/books/<hash>/toc-override.json` (the user-edited
+   * PDF TOC tree). Null when absent/malformed; the LWW decision is the
+   * caller's (pickNewerTocOverride).
+   */
+  async pullTocOverride(book: Book): Promise<RemoteTocOverride | null> {
+    const path = buildBookTocOverridePath(this.provider.rootPath, book.hash);
+    return parseTocOverridePayload(await this.provider.readText(path));
+  }
+
+  /** Push the edited-TOC envelope; same ensureDirs + 409-retry as config. */
+  async pushTocOverride(book: Book, payload: RemoteTocOverride): Promise<void> {
+    const dirPath = buildBookDirPath(this.provider.rootPath, book.hash);
+    const path = buildBookTocOverridePath(this.provider.rootPath, book.hash);
+    const dirs = [...ancestorsOf(`${dirPath}/.placeholder`), dirPath];
+    await this.ensureDirs(dirs);
+    const body = JSON.stringify(payload);
     try {
       await this.provider.writeText(path, body);
     } catch (e) {

@@ -28,6 +28,11 @@ import {
   getStableMetadataHash,
 } from '@/utils/book';
 import type { BookNav } from '@/services/nav';
+import {
+  buildTocOverridePayload,
+  parseTocOverridePayload,
+  type RemoteTocOverride,
+} from '@/services/sync/file/tocOverride';
 import { partialMD5, md5 } from '@/utils/md5';
 import { getBaseFilename, getFilename, stripDuplicateMarker } from '@/utils/path';
 import { BookDoc, DocumentLoader, TOCItem } from '@/libs/document';
@@ -1109,21 +1114,38 @@ export async function saveBookNav(fs: FileSystem, book: Book, nav: BookNav): Pro
 }
 
 // User-edited PDF table of contents (per-book override). The PDF file itself is
-// never touched; on open the stored tree replaces bookDoc.toc wholesale.
+// never touched; on open the stored tree replaces bookDoc.toc wholesale. The
+// local file stores the same envelope the file-sync engine ships to remote
+// backends (`sync/file/tocOverride.ts`); older builds wrote a bare TOCItem[]
+// there, which load still accepts — it stamps as updatedAt 0, so any synced
+// copy wins until this device saves again.
 export async function loadTocOverride(fs: FileSystem, book: Book): Promise<TOCItem[] | null> {
+  const payload = await loadTocOverridePayload(fs, book);
+  return payload ? payload.toc : null;
+}
+
+export async function loadTocOverridePayload(
+  fs: FileSystem,
+  book: Book,
+): Promise<RemoteTocOverride | null> {
   try {
     const path = getTocOverrideFilename(book);
     if (!(await fs.exists(path, 'Books'))) return null;
     const str = (await fs.readFile(path, 'Books', 'text')) as string;
-    const parsed = JSON.parse(str);
-    return Array.isArray(parsed) ? (parsed as TOCItem[]) : null;
+    return parseTocOverridePayload(str);
   } catch {
     return null;
   }
 }
 
-export async function saveTocOverride(fs: FileSystem, book: Book, toc: TOCItem[]): Promise<void> {
-  await fs.writeFile(getTocOverrideFilename(book), 'Books', JSON.stringify(toc));
+export async function saveTocOverride(
+  fs: FileSystem,
+  book: Book,
+  toc: TOCItem[],
+  updatedAt: number = Date.now(),
+): Promise<void> {
+  const payload = buildTocOverridePayload(book, toc, updatedAt);
+  await fs.writeFile(getTocOverrideFilename(book), 'Books', JSON.stringify(payload));
 }
 
 // User drawing annotations on PDF pages (line/rect/text). Per-book local JSON

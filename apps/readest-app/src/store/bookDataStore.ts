@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { SystemSettings } from '@/types/settings';
 import { Book, BookConfig, BookNote } from '@/types/book';
 import { EnvConfigType } from '@/services/environment';
-import { BookDoc } from '@/libs/document';
+import { BookDoc, TOCItem } from '@/libs/document';
 import { useLibraryStore } from './libraryStore';
 
 // Throttle library.json writes triggered by per-book saveConfig.
@@ -76,6 +76,8 @@ interface BookDataState {
     settings: SystemSettings,
   ) => Promise<void>;
   updateBooknotes: (key: string, booknotes: BookNote[]) => BookConfig | undefined;
+  /** Replace the live bookDoc.toc (PDF TOC editor + synced override trees). */
+  setBookDocToc: (key: string, toc: TOCItem[]) => void;
   getBookData: (keyOrId: string) => BookData | null;
   clearBookData: (keyOrId: string) => void;
 }
@@ -214,5 +216,18 @@ export const useBookDataStore = create<BookDataState>((set, get) => ({
       };
     });
     return updatedConfig;
+  },
+  setBookDocToc: (key: string, toc: TOCItem[]) => {
+    set((state) => {
+      const id = key.split('-')[0]!;
+      const existing = state.booksData[id];
+      if (!existing?.bookDoc) return state;
+      return {
+        booksData: {
+          ...state.booksData,
+          [id]: { ...existing, bookDoc: { ...existing.bookDoc, toc } },
+        },
+      };
+    });
   },
 }));

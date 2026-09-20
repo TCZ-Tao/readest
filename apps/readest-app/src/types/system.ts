@@ -2,6 +2,7 @@ import { SystemSettings } from './settings';
 import type { RssFeed } from '@/types/rss';
 import { Book, BookConfig, BookContent, ImportBookOptions, PdfDrawing, ViewSettings } from './book';
 import { BookMetadata, TOCItem } from '@/libs/document';
+import type { RemoteTocOverride } from '@/services/sync/file/tocOverride';
 import type { BookNav } from '@/services/nav';
 import { ProgressHandler } from '@/utils/transfer';
 import { CustomFont, CustomFontInfo } from '@/styles/fonts';
@@ -245,7 +246,8 @@ export interface AppService {
   loadBookNav(book: Book): Promise<BookNav | null>;
   saveBookNav(book: Book, nav: BookNav): Promise<void>;
   loadTocOverride(book: Book): Promise<TOCItem[] | null>;
-  saveTocOverride(book: Book, toc: TOCItem[]): Promise<void>;
+  loadTocOverridePayload(book: Book): Promise<RemoteTocOverride | null>;
+  saveTocOverride(book: Book, toc: TOCItem[], updatedAt?: number): Promise<void>;
   loadPdfDrawings(book: Book): Promise<PdfDrawing[] | null>;
   savePdfDrawings(book: Book, drawings: PdfDrawing[]): Promise<void>;
   loadBookContent(book: Book): Promise<BookContent>;
