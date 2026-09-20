@@ -39,6 +39,12 @@ pnpm install
 pnpm --filter @readest/readest-app setup-vendors   # 拷贝 pdf.js / simplecc / jieba 到 public/vendor
 ```
 
+> ⚠️ **子模块修改警告（AI 代理必读）**
+>
+> `packages/` 等处的子模块是**独立 git 仓库**，指向 `readest` 组织的远程，**没有 fork 到用户账号下**——对它们的改动无法随主仓库推送，且随时可能被 `git submodule update` 之类的操作冲掉、无法恢复。
+>
+> **任何需要修改子模块源码的任务，动手前必须先向用户明确警告**：说明改动将落在哪个子模块、无法随主仓提交/推送、需要单独 fork + 提交 + 更新指针。**经用户确认后才能实现，不要默认继续。** 用户确认后，也要注意：先在子模块里创建分支再提交（子模块常处于 detached HEAD，直接 commit 会产生悬空提交）。
+
 
 
 ## 常用命令
