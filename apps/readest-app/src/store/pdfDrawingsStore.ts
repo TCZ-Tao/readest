@@ -4,6 +4,7 @@ import { PdfDrawing } from '@/types/book';
 import { AppService } from '@/types/system';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
+import { eventDispatcher } from '@/utils/event';
 
 // Pen presets shared by the draw overlay and the shape editor toolbars.
 export const PDF_STROKE_WIDTHS = [1, 2, 4, 8];
@@ -72,6 +73,8 @@ export const applyPdfDrawings = async (
   if (book && appService) {
     try {
       await appService.savePdfDrawings(book, drawings);
+      // Tell the reader's file-sync hook to push the fresh envelope.
+      eventDispatcher.dispatch('pdf-drawings-changed', { bookKey });
     } catch (e) {
       console.warn('Failed to persist PDF drawings:', e);
     }

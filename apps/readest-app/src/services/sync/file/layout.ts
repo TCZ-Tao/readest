@@ -36,6 +36,9 @@ export const SYNC_BOOK_COVER_FILE = 'cover.png';
 // Additive to the frozen layout above: older clients simply never look for it,
 // same contract as the tts/ directory.
 export const SYNC_BOOK_TOC_FILE = 'toc-override.json';
+// User drawing annotations on PDF pages (the page tools' per-book shape list).
+// Additive to the frozen layout above: older clients simply never look for it.
+export const SYNC_BOOK_PDF_DRAWINGS_FILE = 'pdf-drawings.json';
 // TTS section packs (<section>-<keysfp>.mp3 + .json sidecars) live in a
 // per-book subdirectory. Additive to the frozen layout above: older clients
 // simply never look inside it.
@@ -82,6 +85,10 @@ export const buildBookConfigPath = (rootPath: string, bookHash: string): string 
 /** Absolute path of a book's edited-TOC override file. */
 export const buildBookTocOverridePath = (rootPath: string, bookHash: string): string =>
   join(buildBookDirPath(rootPath, bookHash), SYNC_BOOK_TOC_FILE);
+
+/** Absolute path of a book's PDF drawing-annotations file. */
+export const buildBookPdfDrawingsPath = (rootPath: string, bookHash: string): string =>
+  join(buildBookDirPath(rootPath, bookHash), SYNC_BOOK_PDF_DRAWINGS_FILE);
 
 /** Absolute path of the shared library.json index. */
 export const buildLibraryPath = (rootPath: string): string =>

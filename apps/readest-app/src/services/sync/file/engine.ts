@@ -11,6 +11,7 @@ import {
   buildBookDirPath,
   buildBookFilePath,
   buildBookTocOverridePath,
+  buildBookPdfDrawingsPath,
   buildLibraryPath,
   SYNC_BOOKS_DIR,
   SYNC_BOOK_CONFIG_FILE,
@@ -24,6 +25,7 @@ import {
   RemoteLibraryIndex,
 } from './wire';
 import { parseTocOverridePayload, RemoteTocOverride } from './tocOverride';
+import { parsePdfDrawingsPayload, RemotePdfDrawings } from './pdfDrawings';
 import {
   isRemoteBookClockNewer,
   isRemoteBookMissingLocally,
@@ -351,6 +353,35 @@ export class FileSyncEngine {
   async pushTocOverride(book: Book, payload: RemoteTocOverride): Promise<void> {
     const dirPath = buildBookDirPath(this.provider.rootPath, book.hash);
     const path = buildBookTocOverridePath(this.provider.rootPath, book.hash);
+    const dirs = [...ancestorsOf(`${dirPath}/.placeholder`), dirPath];
+    await this.ensureDirs(dirs);
+    const body = JSON.stringify(payload);
+    try {
+      await this.provider.writeText(path, body);
+    } catch (e) {
+      if (e instanceof FileSyncError && e.status === 409) {
+        await this.ensureDirs(dirs);
+        await this.provider.writeText(path, body);
+        return;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Pull `<rootPath>/Readest/books/<hash>/pdf-drawings.json` (the user's PDF
+   * drawing annotations). Null when absent/malformed; the LWW decision is the
+   * caller's (pickNewerPdfDrawings).
+   */
+  async pullPdfDrawings(book: Book): Promise<RemotePdfDrawings | null> {
+    const path = buildBookPdfDrawingsPath(this.provider.rootPath, book.hash);
+    return parsePdfDrawingsPayload(await this.provider.readText(path));
+  }
+
+  /** Push the drawing-annotations envelope; same ensureDirs + 409-retry as config. */
+  async pushPdfDrawings(book: Book, payload: RemotePdfDrawings): Promise<void> {
+    const dirPath = buildBookDirPath(this.provider.rootPath, book.hash);
+    const path = buildBookPdfDrawingsPath(this.provider.rootPath, book.hash);
     const dirs = [...ancestorsOf(`${dirPath}/.placeholder`), dirPath];
     await this.ensureDirs(dirs);
     const body = JSON.stringify(payload);

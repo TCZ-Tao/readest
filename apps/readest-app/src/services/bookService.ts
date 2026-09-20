@@ -33,6 +33,11 @@ import {
   parseTocOverridePayload,
   type RemoteTocOverride,
 } from '@/services/sync/file/tocOverride';
+import {
+  buildPdfDrawingsPayload,
+  parsePdfDrawingsPayload,
+  type RemotePdfDrawings,
+} from '@/services/sync/file/pdfDrawings';
 import { partialMD5, md5 } from '@/utils/md5';
 import { getBaseFilename, getFilename, stripDuplicateMarker } from '@/utils/path';
 import { BookDoc, DocumentLoader, TOCItem } from '@/libs/document';
@@ -1150,13 +1155,24 @@ export async function saveTocOverride(
 
 // User drawing annotations on PDF pages (line/rect/text). Per-book local JSON
 // keyed by page + PDF user-space coords; the PDF file itself is never touched.
+// The local file stores the same envelope the file-sync engine ships to remote
+// backends (`sync/file/pdfDrawings.ts`); older builds wrote a bare PdfDrawing[]
+// there, which load still accepts — it stamps as updatedAt 0, so any synced
+// copy wins until this device saves again.
 export async function loadPdfDrawings(fs: FileSystem, book: Book): Promise<PdfDrawing[] | null> {
+  const payload = await loadPdfDrawingsPayload(fs, book);
+  return payload ? payload.drawings : null;
+}
+
+export async function loadPdfDrawingsPayload(
+  fs: FileSystem,
+  book: Book,
+): Promise<RemotePdfDrawings | null> {
   try {
     const path = getPdfDrawingsFilename(book);
     if (!(await fs.exists(path, 'Books'))) return null;
     const str = (await fs.readFile(path, 'Books', 'text')) as string;
-    const parsed = JSON.parse(str);
-    return Array.isArray(parsed) ? (parsed as PdfDrawing[]) : null;
+    return parsePdfDrawingsPayload(str);
   } catch {
     return null;
   }
@@ -1166,8 +1182,10 @@ export async function savePdfDrawings(
   fs: FileSystem,
   book: Book,
   drawings: PdfDrawing[],
+  updatedAt: number = Date.now(),
 ): Promise<void> {
-  await fs.writeFile(getPdfDrawingsFilename(book), 'Books', JSON.stringify(drawings));
+  const payload = buildPdfDrawingsPayload(book, drawings, updatedAt);
+  await fs.writeFile(getPdfDrawingsFilename(book), 'Books', JSON.stringify(payload));
 }
 
 export async function fetchBookDetails(

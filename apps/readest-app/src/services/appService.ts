@@ -661,8 +661,12 @@ export abstract class BaseAppService implements AppService {
     return BookSvc.loadPdfDrawings(this.fs, book);
   }
 
-  async savePdfDrawings(book: Book, drawings: PdfDrawing[]) {
-    return BookSvc.savePdfDrawings(this.fs, book, drawings);
+  async loadPdfDrawingsPayload(book: Book) {
+    return BookSvc.loadPdfDrawingsPayload(this.fs, book);
+  }
+
+  async savePdfDrawings(book: Book, drawings: PdfDrawing[], updatedAt?: number) {
+    return BookSvc.savePdfDrawings(this.fs, book, drawings, updatedAt);
   }
 
   async loadFeeds(): Promise<RssFeed[]> {

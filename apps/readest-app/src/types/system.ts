@@ -3,6 +3,7 @@ import type { RssFeed } from '@/types/rss';
 import { Book, BookConfig, BookContent, ImportBookOptions, PdfDrawing, ViewSettings } from './book';
 import { BookMetadata, TOCItem } from '@/libs/document';
 import type { RemoteTocOverride } from '@/services/sync/file/tocOverride';
+import type { RemotePdfDrawings } from '@/services/sync/file/pdfDrawings';
 import type { BookNav } from '@/services/nav';
 import { ProgressHandler } from '@/utils/transfer';
 import { CustomFont, CustomFontInfo } from '@/styles/fonts';
@@ -249,7 +250,8 @@ export interface AppService {
   loadTocOverridePayload(book: Book): Promise<RemoteTocOverride | null>;
   saveTocOverride(book: Book, toc: TOCItem[], updatedAt?: number): Promise<void>;
   loadPdfDrawings(book: Book): Promise<PdfDrawing[] | null>;
-  savePdfDrawings(book: Book, drawings: PdfDrawing[]): Promise<void>;
+  loadPdfDrawingsPayload(book: Book): Promise<RemotePdfDrawings | null>;
+  savePdfDrawings(book: Book, drawings: PdfDrawing[], updatedAt?: number): Promise<void>;
   loadBookContent(book: Book): Promise<BookContent>;
   resolveNativeBookFilePath(book: Book): Promise<string | null>;
   loadFeeds(): Promise<RssFeed[]>;

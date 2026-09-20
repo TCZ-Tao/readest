@@ -13,6 +13,8 @@ import type { BookNote } from '@/types/book';
 import { FileSyncEngine } from '@/services/sync/file/engine';
 import { FileSyncError } from '@/services/sync/file/provider';
 import { pickNewerTocOverride, type RemoteTocOverride } from '@/services/sync/file/tocOverride';
+import { pickNewerPdfDrawings, type RemotePdfDrawings } from '@/services/sync/file/pdfDrawings';
+import { usePdfDrawingsStore } from '@/store/pdfDrawingsStore';
 import { normalizeTocTree } from '@/app/reader/components/sidebar/tocEditTree';
 import { createAppLocalStore } from '@/services/sync/file/appLocalStore';
 import {
@@ -619,6 +621,80 @@ export const useFileSync = (bookKey: string) => {
     }
   }, [isReady, bookKey, engines, getBookData, allowsPush, appService, handleSyncError]);
 
+  /**
+   * Sync the PDF drawing-annotations file (`pdf-drawings.json`) across every
+   * backend — the same whole-blob LWW contract as the TOC override above. A
+   * newer remote wins: persist it (keeping its own timestamp), hot-swap the
+   * live book's shape layers and the React mirror so the open reader adopts
+   * it immediately. With `pushLocalIfNewest`, backends whose copy is missing
+   * or older receive the winner.
+   */
+  const syncPdfDrawingsNow = useCallback(
+    async (options: { pushLocalIfNewest?: boolean }) => {
+      if (!isReady) return;
+      const book = getBookData(bookKey)?.book;
+      if (!book || book.format !== 'PDF') return;
+      const local: RemotePdfDrawings | null =
+        (await appService?.loadPdfDrawingsPayload(book)) ?? null;
+      let working: RemotePdfDrawings | null = local;
+      const stale: Array<{ kind: FileSyncBackendKind; engine: FileSyncEngine }> = [];
+      for (const { kind, engine } of engines) {
+        if (!allowsPull(kind)) continue;
+        try {
+          const remote = await engine.pullPdfDrawings(book);
+          const next = pickNewerPdfDrawings(working, remote);
+          if (next && next !== working) {
+            working = next;
+          } else if (
+            options.pushLocalIfNewest &&
+            working &&
+            (!remote || remote.updatedAt < working.updatedAt)
+          ) {
+            stale.push({ kind, engine });
+          }
+        } catch (e) {
+          handleSyncError(kind, 'file sync drawings pull failed', e);
+        }
+      }
+      if (working && working !== local) {
+        // A newer remote list landed: persist it (keeping its own timestamp),
+        // then hot-swap the live book's SVG layers and the store mirror.
+        await appService?.savePdfDrawings(book, working.drawings, working.updatedAt);
+        const view = useReaderStore.getState().getView(bookKey);
+        view?.book?.setDrawings?.(working.drawings);
+        usePdfDrawingsStore.getState().setDrawings(bookKey, working.drawings);
+      }
+      const winner = working;
+      if (winner) {
+        for (const { kind, engine } of stale) {
+          try {
+            await engine.pushPdfDrawings(book, winner);
+          } catch (e) {
+            handleSyncError(kind, 'file sync drawings push failed', e);
+          }
+        }
+      }
+    },
+    [isReady, bookKey, engines, getBookData, allowsPull, appService, handleSyncError],
+  );
+
+  /** Push the freshly-saved local drawing list to every backend that allows it. */
+  const pushPdfDrawingsNow = useCallback(async () => {
+    if (!isReady) return;
+    const book = getBookData(bookKey)?.book;
+    if (!book || book.format !== 'PDF') return;
+    const local = await appService?.loadPdfDrawingsPayload(book);
+    if (!local) return;
+    for (const { kind, engine } of engines) {
+      if (!allowsPush(kind)) continue;
+      try {
+        await engine.pushPdfDrawings(book, local);
+      } catch (e) {
+        handleSyncError(kind, 'file sync drawings push failed', e);
+      }
+    }
+  }, [isReady, bookKey, engines, getBookData, allowsPush, appService, handleSyncError]);
+
   // Stash the latest callbacks in a ref so the event-bridge effect doesn't
   // re-bind on every render (pattern from useKOSync).
   const syncRefs = useRef({
@@ -628,6 +704,8 @@ export const useFileSync = (bookKey: string) => {
     pushBookCoverNow,
     pushTocOverrideNow,
     syncTocOverrideNow,
+    pushPdfDrawingsNow,
+    syncPdfDrawingsNow,
   });
   useEffect(() => {
     syncRefs.current = {
@@ -637,8 +715,19 @@ export const useFileSync = (bookKey: string) => {
       pushBookCoverNow,
       pushTocOverrideNow,
       syncTocOverrideNow,
+      pushPdfDrawingsNow,
+      syncPdfDrawingsNow,
     };
-  }, [pushNow, pullNow, pushBookFileNow, pushBookCoverNow, pushTocOverrideNow, syncTocOverrideNow]);
+  }, [
+    pushNow,
+    pullNow,
+    pushBookFileNow,
+    pushBookCoverNow,
+    pushTocOverrideNow,
+    syncTocOverrideNow,
+    pushPdfDrawingsNow,
+    syncPdfDrawingsNow,
+  ]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedPush = useCallback(
@@ -670,6 +759,7 @@ export const useFileSync = (bookKey: string) => {
         await syncRefs.current.pushNow();
       }
       await syncRefs.current.syncTocOverrideNow({ pushLocalIfNewest: true });
+      await syncRefs.current.syncPdfDrawingsNow({ pushLocalIfNewest: true });
       await Promise.all([syncRefs.current.pushBookCoverNow(), syncRefs.current.pushBookFileNow()]);
     })();
   }, [isReady, progress?.location]);
@@ -721,21 +811,27 @@ export const useFileSync = (bookKey: string) => {
       if (event.detail?.bookKey && event.detail.bookKey !== bookKey) return;
       syncRefs.current.pushTocOverrideNow();
     };
+    const handlePdfDrawingsChanged = (event: CustomEvent) => {
+      if (event.detail?.bookKey && event.detail.bookKey !== bookKey) return;
+      syncRefs.current.pushPdfDrawingsNow();
+    };
     eventDispatcher.on('push-file-sync', handlePush);
     eventDispatcher.on('pull-file-sync', handlePull);
     eventDispatcher.on('flush-file-sync', handlePush);
     eventDispatcher.on('toc-override-changed', handleTocOverrideChanged);
+    eventDispatcher.on('pdf-drawings-changed', handlePdfDrawingsChanged);
     return () => {
       eventDispatcher.off('push-file-sync', handlePush);
       eventDispatcher.off('pull-file-sync', handlePull);
       eventDispatcher.off('flush-file-sync', handlePush);
       eventDispatcher.off('toc-override-changed', handleTocOverrideChanged);
+      eventDispatcher.off('pdf-drawings-changed', handlePdfDrawingsChanged);
     };
   }, [bookKey, debouncedPush]);
 
   // Window blur ⇒ push pending changes. Window focus ⇒ pull (cooldown-gated):
-  // both configs and the edited-TOC override, so edits made on another device
-  // land here as soon as the reader regains focus.
+  // both configs and the edited-TOC override and the PDF drawings, so edits
+  // made on another device land here as soon as the reader regains focus.
   useWindowActiveChanged((isActive) => {
     if (!isReady) return;
     if (isActive) {
@@ -743,6 +839,7 @@ export const useFileSync = (bookKey: string) => {
         syncRefs.current.pullNow();
       }
       syncRefs.current.syncTocOverrideNow({ pushLocalIfNewest: true });
+      syncRefs.current.syncPdfDrawingsNow({ pushLocalIfNewest: true });
     } else if (dirtyRef.current) {
       debouncedPush.flush();
     }
